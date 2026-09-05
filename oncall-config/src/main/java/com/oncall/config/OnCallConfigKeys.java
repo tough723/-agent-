@@ -81,12 +81,18 @@ public final class OnCallConfigKeys {
 
     // ---- MCP 工具纳管 ----
     //
-    // 刻意【没有】mcp.tool-name-prefix 这个键：
-    // 前缀格式 mcp:<server>:<tool> 是安全边界的一部分（它让"哪个 server 的哪个工具"
-    // 可寻址），做成可配置就等于允许有人把两个 server 的工具名空间合并，
-    // 从而用 A 的纳管结果授权 B 的工具。这类东西属于不变量，不属于配置。
+    // 刻意【没有】的两个键：
+    //   mcp.tool-name-prefix —— 前缀格式 mcp:<server>:<tool> 是安全边界的一部分
+    //     （它让"哪个 server 的哪个工具"可寻址），做成可配置就等于允许把两个
+    //     server 的工具名空间合并，从而用 A 的纳管结果授权 B 的工具。
+    //   mcp.allowed-servers —— 与工具白名单是两个事实来源，会互相矛盾：
+    //     server 在名单里但没有工具策略 ⇒ 连上去什么也做不了；
+    //     有工具策略但 server 不在名单里 ⇒ 死配置。
+    //     改为从 ToolPolicyEngine 已注册的 MCP 策略反推（见 mcpServers()）。
+    //     另一个现实原因：注册表规定默认值必须可解析，而"一个 server 都不连"
+    //     这个安全默认值在 STRING_LIST 下无法表达（空串被判为不可解析）。
+    //     与其为了塞进这个键去放宽全类型共用的默认值校验，不如不要这个键。
     public static final String MCP_TOOLCALLBACK_ENABLED = "mcp.toolcallback-enabled";
-    public static final String MCP_ALLOWED_SERVERS = "mcp.allowed-servers";
     public static final String MCP_DISCOVERY_REFRESH_SECONDS = "mcp.discovery-refresh-seconds";
 
     // ---- 兜底（按架构约束仅后端可见）----

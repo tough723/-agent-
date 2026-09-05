@@ -209,10 +209,10 @@ class OnCallConfigRegistryTest {
         // 用精确值而不是区间，是刻意的：曾经文档写「36 项 / RUNTIME_HOT 20 项」而
         // 代码实际是 38 项 / 22 项，差了 2 项且没人发现。区间断言抓不到这种漂移。
         Map<ConfigTier, Integer> counts = registry.countByTier();
-        assertThat(counts.get(ConfigTier.RUNTIME_HOT)).isEqualTo(25);
+        assertThat(counts.get(ConfigTier.RUNTIME_HOT)).isEqualTo(24);
         assertThat(counts.get(ConfigTier.REQUIRES_MIGRATION)).isEqualTo(8);
         assertThat(counts.get(ConfigTier.BACKEND_ONLY)).isEqualTo(9);
-        assertThat(registry.size()).isEqualTo(42);
+        assertThat(registry.size()).isEqualTo(41);
     }
 
     @Test
@@ -228,18 +228,16 @@ class OnCallConfigRegistryTest {
     }
 
     @Test
-    @DisplayName("MCP server 名单默认为空：没显式配就不连任何 server")
-    void mcpAllowedServersIsEmptyByDefault() {
-        assertThat(registry.require(OnCallConfigKeys.MCP_ALLOWED_SERVERS).defaultValue()).isEmpty();
-    }
-
-    @Test
-    @DisplayName("刻意不存在 mcp 前缀格式的配置项 —— 它是安全边界不是可调参数")
-    void thereIsNoConfigurableMcpNamePrefix() {
-        // 前缀 mcp:<server>:<tool> 让"哪个 server 的哪个工具"可寻址。
-        // 如果它能被配置，就可以把两个 server 的名字空间合并，
-        // 从而用 A 的纳管结果去授权 B 的工具。
+    @DisplayName("刻意不存在 mcp 前缀格式与 server 名单的配置项 —— 它们是安全边界与派生量，不是可调参数")
+    void thereIsNoConfigurableMcpNamePrefixOrServerList() {
+        // ① 前缀 mcp:<server>:<tool> 让"哪个 server 的哪个工具"可寻址。
+        //    如果它能被配置，就可以把两个 server 的名字空间合并，
+        //    从而用 A 的纳管结果去授权 B 的工具。
         assertThat(registry.all()).extracting(ConfigSpec::key).noneMatch(k -> k.contains("prefix"));
+        // ② server 名单会与工具白名单形成两个事实来源，必然出现互相矛盾的状态
+        //    （在名单里但没策略 / 有策略但不在名单里），且两种都不报错。
+        //    改为从 ToolPolicyEngine.mcpServers() 反推。
+        assertThat(registry.all()).extracting(ConfigSpec::key).noneMatch(k -> k.contains("allowed-servers"));
     }
 
     @Test

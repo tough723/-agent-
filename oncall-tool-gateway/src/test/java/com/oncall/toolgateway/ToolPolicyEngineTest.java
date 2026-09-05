@@ -141,4 +141,56 @@ class ToolPolicyEngineTest {
         assertThat(store.keyFor("run-2", 3, "scale_replicas", "{\"replicas\":5}")).isNotEqualTo(b);
         assertThat(store.keyFor("run-1", 4, "scale_replicas", "{\"replicas\":5}")).isNotEqualTo(b);
     }
+
+    // ------------------------------------------------- MCP server 集合反推
+
+    private static ToolPolicy mcp(String namespacedName) {
+        return new ToolPolicy(namespacedName, ToolSource.MCP, RiskLevel.READ_ONLY,
+                false, Duration.ZERO, false, null);
+    }
+
+    @Test
+    @DisplayName("server 集合从已注册的 MCP 策略反推 —— 不另配一份名单，避免两个事实来源")
+    void mcpServersAreDerivedFromPolicies() {
+        ToolPolicyEngine e = new ToolPolicyEngine(List.of(
+                mcp("mcp:cmdb:restart_service"),
+                mcp("mcp:cmdb:query_topology"),
+                mcp("mcp:billing:refund"),
+                ToolPolicy.readOnly("query_logs")   // LOCAL，不该出现在 server 集合里
+        ));
+
+        assertThat(e.mcpServers()).containsExactly("billing", "cmdb");
+    }
+
+    @Test
+    @DisplayName("没有任何 MCP 策略时 server 集合为空 —— 默认一个都不连")
+    void noMcpPoliciesMeansNoServers() {
+        assertThat(engine().mcpServers()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("名字不带前缀的 MCP 策略被忽略 —— 脏数据不能凭空造出一个 server")
+    void malformedMcpPolicyIsIgnored() {
+        ToolPolicyEngine e = new ToolPolicyEngine(List.of(
+                mcp("restart_service"),      // 少了 mcp:<server>: 前缀
+                mcp("mcp:"),                 // 只有前缀
+                mcp("mcp::tool")             // server 段为空
+        ));
+
+        assertThat(e.mcpServers()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("撤掉某个 server 的全部策略后，它立刻从 server 集合消失")
+    void revokingAllPoliciesRemovesTheServer() {
+        ToolPolicyEngine e = new ToolPolicyEngine(List.of(
+                mcp("mcp:cmdb:restart_service"),
+                mcp("mcp:billing:refund")
+        ));
+        assertThat(e.mcpServers()).containsExactly("billing", "cmdb");
+
+        e.revoke("mcp:billing:refund");
+
+        assertThat(e.mcpServers()).containsExactly("cmdb");
+    }
 }

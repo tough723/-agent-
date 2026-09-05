@@ -274,14 +274,9 @@ public final class OnCallConfigRegistry {
                         + "MCP 工具只能经 McpToolRegistrar 显式纳管后进入（不变量 I14）。")
                 .build());
 
-        // RUNTIME_HOT + 高危清单：可以运行时改，但必须两个人同意。
-        // 加一个 server 等于把一批远端工具接入系统的攻击面，不该一个人说了算。
-        out.add(ConfigSpec.builder(OnCallConfigKeys.MCP_ALLOWED_SERVERS, ConfigType.STRING_LIST,
-                        "", ConfigTier.RUNTIME_HOT)
-                .group(g)
-                .description("允许连接的 MCP server 名单（逗号分隔）。不在名单里的 server 一律不连接。"
-                        + "server 名只允许字母数字与 . _ -，不能含 ':'。")
-                .build());
+        // 刻意【没有】mcp.allowed-servers：那会与工具白名单形成两个事实来源。
+        // 允许连接哪些 server 由已注册的 MCP 工具策略反推
+        // （ToolPolicyEngine.mcpServers()），一份清单不可能与自己矛盾。
 
         // 刻意不做成"自动纳管新工具"的开关：默认拒绝是不变量，不是可调参数。
         // 这个键只控制"多久重新看一眼清单以便发现异常"，不控制"发现了要不要放行"。

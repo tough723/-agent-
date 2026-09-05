@@ -71,7 +71,7 @@ ls *.md                                            # 确认文档集完整
   但同一个重试在延迟上是 +8s，直接击穿 P95。**换个维度结论就翻转**，
   这类地方最容易漏。
 - **发现自己之前的结论错了要明说**，不要悄悄改掉。
-  这个项目里已经修正过：「36 项参数」实际是 39 项；
+  这个项目里已经修正过：「36 项参数」实际是 39 项（现为 41 项）；
   「四重预算」实际是三重；`#5903` 不是 reranker 的活 issue，`#6524` 才是。
 - **不要用"用了 23 种设计模式"这种说法。** 说 5 种组合。
 - **不要说"引用幻觉率 = 0"**，要说"**文档级**引用幻觉率 = 0"。
@@ -83,7 +83,7 @@ ls *.md                                            # 确认文档集完整
 | 文件 | 作用 |
 |------|------|
 | `oncall-tool-gateway/.../GuardedToolCallback.java` | **基石**：七道关卡 |
-| `oncall-config/.../OnCallConfigRegistry.java` | 39 项配置的唯一声明处 |
+| `oncall-config/.../OnCallConfigRegistry.java` | 41 项配置的唯一声明处 |
 | `oncall-config-admin/.../ConfigAdminController.java` | 配置 REST + 双人复核 |
 | `db/migration/V1__config_governance.sql` | 已落地的 2 张表 |
 | `.github/mvn-test.sh` | CI 失败诊断（annotation 通道） |

@@ -59,8 +59,6 @@ public final class McpToolRegistrar {
     /** 合法的 server / 工具名字符集。刻意不含 {@code :} 与空白。 */
     private static final Pattern SAFE_NAME = Pattern.compile("[A-Za-z0-9._-]+");
 
-    private static final String PREFIX = "mcp";
-
     private final McpToolCatalog catalog;
     private final ToolPolicyEngine policyEngine;
     private final KillSwitch killSwitch;
@@ -91,7 +89,7 @@ public final class McpToolRegistrar {
 
     /** 拼出对外唯一名字。 */
     public static String namespacedName(String server, String rawToolName) {
-        return PREFIX + ":" + server + ":" + rawToolName;
+        return ToolPolicyEngine.MCP_PREFIX + server + ":" + rawToolName;
     }
 
     /**
@@ -185,7 +183,7 @@ public final class McpToolRegistrar {
         if (rawName.contains(":")) {
             return "工具名含 ':'，可能伪造跨 server 的名字";
         }
-        if (rawName.startsWith(PREFIX + ":")) {
+        if (rawName.startsWith(ToolPolicyEngine.MCP_PREFIX)) {
             return "工具名不应自带 mcp: 前缀";
         }
         if (!SAFE_NAME.matcher(rawName).matches()) {

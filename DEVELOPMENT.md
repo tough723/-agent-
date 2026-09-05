@@ -26,10 +26,10 @@
 | Build & test `oncall-tool-gateway`（依赖 Spring AI） | ✅ |
 | Build & test `oncall-ontology`（轻量本体，纯 Java，零外部依赖） | ✅ |
 | Build & test `oncall-archtest`（架构约束 F1–F4、F9） | ✅ `archunit:1.4.2` |
-| Assert tests actually ran | ✅ `报告文件=19 测试总数=251 失败=0 错误=0 跳过=0` |
+| Assert tests actually ran | ✅ 见本节末尾的最新数字 |
 | **DDL on PostgreSQL 16 + pgvector** | ✅ V1–V6 各 6/6，**重复执行也 6/6**，表数 **18** |
 
-**测试数字对得上**：19 个报告文件对应 19 个测试类，251 = 已有 184 +
+**测试数字对得上**：20 个报告文件对应 20 个测试类，280 = 已有 184 +
 `oncall-ontology` 59 + `oncall-archtest` 8。
 
 **DDL job 的两个断言**：`information_schema` 表数必须恰好 18
@@ -157,7 +157,7 @@ oncall-agent/
 │       ├── ConfigChange.java            变更审计记录
 │       ├── ConfigAuditLog.java          审计端口 + InMemory 实现
 │       ├── OnCallConfigKeys.java        39 个配置键常量
-│       ├── OnCallConfigRegistry.java    39 项参数声明（23 热改 / 8 迁移 / 8 后端专属）
+│       ├── OnCallConfigRegistry.java    41 项参数声明（24 热改 / 8 迁移 / 9 后端专属）
 │       ├── schema/ConfigSchemaExporter.java  前端 JSON schema 导出（手写，零依赖）
 │       └── store/
 │           ├── JdbcConfigStore.java     配置覆盖值持久化（墓碑行 + 方言无关 upsert）
@@ -313,7 +313,7 @@ OWL 与 SWRL 都单调、无否定即失败，表达不了「除非…否则…�
 | `ConfigSnapshot` | 一次请求内配置一致，并标明基于哪一版 revision |
 | `ConfigSchemaExporter` | 导出前端可直接渲染的 JSON schema，后端加配置项前端自动多一个表单项 |
 
-**39 项参数**逐条对应 `质量与可靠性设计.md §3.1` 的 19 项冻结参数 +
+**41 项参数**逐条对应 `质量与可靠性设计.md §3.1` 的 19 项冻结参数 +
 `开工前决策冻结与返工风险评估.md §5` 补充的 6 项，并用测试锁住默认值一致性。
 
 两个上游硬限制被**编码成校验边界**，前端物理上填不出会导致故障的值：
