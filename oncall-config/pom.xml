@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.oncall</groupId>
+    <artifactId>oncall-agent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>oncall-config</artifactId>
+  <name>oncall-config</name>
+
+  <!--
+    配置治理：所有可配置项的唯一声明处（single source of truth）。
+
+    刻意零外部依赖，与 oncall-domain 同一条架构约束：
+    配置的校验、边界、分级、审计逻辑必须能脱离 Spring 单元测试。
+    JSON schema 导出用手写实现，不引 Jackson——这个模块的产物是"给前端渲染表单用的
+    扁平 schema"，结构极简，不值得为此背一个依赖。
+
+    持久化（JdbcConfigStore）与热推送（配置中心监听）放在 infra 层实现 ConfigStore 端口，
+    本模块只定义端口。
+  -->
+</project>

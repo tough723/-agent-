@@ -37,6 +37,7 @@
 
   <modules>
     <module>oncall-domain</module>
+    <module>oncall-config</module>
     <module>oncall-tool-gateway</module>
   </modules>
 

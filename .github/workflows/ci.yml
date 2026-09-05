@@ -60,6 +60,9 @@ jobs:
       - name: Build & test oncall-domain (纯 Java，零外部依赖)
         run: mvn -B -pl oncall-domain -am test
 
+      - name: Build & test oncall-config (配置治理，纯 Java，零外部依赖)
+        run: mvn -B -pl oncall-config -am test
+
       - name: Build & test oncall-tool-gateway (依赖 Spring AI)
         run: mvn -B -pl oncall-tool-gateway -am test
 

@@ -30,5 +30,16 @@
       <groupId>org.springframework.ai</groupId>
       <artifactId>spring-ai-model</artifactId>
     </dependency>
+    <!--
+      仅测试作用域：用于校验 oncall-config 里以字符串声明的枚举取值
+      （autonomy.level / autonomy.kill-switch-mode）与真实枚举常量一致。
+      oncall-config 刻意保持零依赖，所以这条一致性只能从这边守。
+    -->
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-config</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>
