@@ -158,7 +158,7 @@ public class GuardedToolCallback implements ToolCallback {
                                                String runId,
                                                int step) {
         return new GuardedToolCallback(delegate, policyEngine, killSwitch,
-                (k, p, a) -> Approval.approved("auto"), auditLog, idempotencyStore,
+                (k, p, a) -> Approval.granted("auto"), auditLog, idempotencyStore,
                 ArgClamper.NOOP, runId, step);
     }
 

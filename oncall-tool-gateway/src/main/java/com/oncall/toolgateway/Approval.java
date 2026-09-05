@@ -10,7 +10,13 @@ package com.oncall.toolgateway;
  */
 public record Approval(boolean approved, String approver, String reason, boolean expired) {
 
-    public static Approval approved(String approver) {
+    // 注意：静态工厂不能与 record 组件同名同参。
+    // 组件 approved / expired 已隐式生成 boolean approved() / boolean expired() 访问器，
+    // 再声明 static Approval expired() 会顶掉访问器，编译报
+    // "invalid accessor method in record"，并把调用点的 boolean 用法一起带崩。
+    // 所以工厂方法一律用动词命名：granted / rejected / timedOut。
+
+    public static Approval granted(String approver) {
         return new Approval(true, approver, null, false);
     }
 
@@ -19,7 +25,7 @@ public record Approval(boolean approved, String approver, String reason, boolean
     }
 
     /** 审批超时：不是卡死，是升级信号。 */
-    public static Approval expired() {
+    public static Approval timedOut() {
         return new Approval(false, null, "approval timed out", true);
     }
 }
