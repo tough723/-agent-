@@ -112,7 +112,7 @@ class RuleEngineTest {
     @DisplayName("风险等级缺失时按 HIGH 处理 —— MCP 运行时拉取的工具没有注解")
     void missingRiskLevelDefaultsToStrictest() {
         RuleContext c = new RuleContext("service:payment-gateway", null, null,
-                false, RuleContext.NO_RUNBOOK);
+                null, false, RuleContext.NO_RUNBOOK);
         assertEquals(RiskLevel.HIGH, c.riskLevel());
         assertTrue(c.isHighRisk());
         assertEquals(2, engine().evaluate(ontology, c).minApprovers());

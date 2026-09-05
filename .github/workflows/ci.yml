@@ -150,14 +150,18 @@ jobs:
   # 全都要等到 M2 第一次启动才炸。schema 属于「改不了要重来」的那一类，
   # 晚发现的代价是非线性的。
   #
-  # ⚠️ 第一轮 continue-on-error: true：脚本还没被验证过，很可能有错。
-  #    先把错误暴露成 annotation 看清楚，修完之后**必须把这个开关去掉**，
-  #    让它变成硬失败。留着 continue-on-error 就等于没有这道防线。
+  # 第一轮曾开过 continue-on-error: true（脚本当时从未被执行过，很可能有错）。
+  # run 33979708322 的结果是 6 个脚本全部通过、且重复执行也通过，
+  # 所以这个开关已经去掉——**留着 continue-on-error 就等于没有这道防线**。
+  #
+  # 那次实测顺带确认了几件当时无法验证的事：
+  #   vector(1024) + HNSW 索引、PARTITION BY RANGE 与 DEFAULT 分区共存、
+  #   onto_concept.parent_id 的自引用外键、以及全部 COMMENT ON 的列名拼写。
+  #   information_schema 报出 18 张表 = 15 张逻辑表 + 3 个 DEFAULT 分区。
   # -------------------------------------------------------------------
   ddl:
     name: DDL on PostgreSQL 16 + pgvector
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     services:
       postgres:
@@ -196,9 +200,27 @@ jobs:
           n=$(psql -h localhost -U postgres -d oncall -tAc \
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
           echo "::notice::DDL-表数 $n"
+          # 精确断言而不是「> 0」：18 = 15 张逻辑表 + 3 个 DEFAULT 分区
+          # （alert_group_default / alert_event_default / llm_call_log_default）。
+          # 这个数字变了说明有人动了 schema，必须是有意的。
+          if [ "$n" -ne 18 ]; then
+            echo "::error::DDL-表数 $n，期望 18（15 张逻辑表 + 3 个 DEFAULT 分区）"
+            fail=1
+          fi
           echo "===== 约束核查（幂等与不能自审） ====="
           psql -h localhost -U postgres -d oncall -c \
             "SELECT conname, contype FROM pg_constraint WHERE conname IN ('uq_agent_step_idem','chk_approval_not_self','chk_onto_criticality') ORDER BY conname"
+          # 这两个约束是数据库级的不变量，必须以断言而不是「打印出来人看一眼」的形式存在
+          for c in uq_agent_step_idem chk_approval_not_self; do
+            got=$(psql -h localhost -U postgres -d oncall -tAc \
+              "SELECT count(*) FROM pg_constraint WHERE conname='$c'")
+            if [ "$got" = "1" ]; then
+              echo "::notice::DDL-约束 $c 存在"
+            else
+              echo "::error::DDL-约束 $c 缺失（不变量已失去物理保证）"
+              fail=1
+            fi
+          done
           exit $fail
 
       - name: Verify idempotency re-run (脚本必须可重复执行)

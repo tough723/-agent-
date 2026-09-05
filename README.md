@@ -17,7 +17,7 @@
 | CI | GitHub Actions，JDK 17 temurin + Maven 3.9.16 |
 | 测试 | **250 个用例 / 19 个测试类，全通过** |
 | 已落地模块 | `oncall-domain`、`oncall-config`、`oncall-config-admin`、`oncall-tool-gateway`、`oncall-ontology`、`oncall-archtest`（仅测试） |
-| 数据库 | 15 张表的 DDL 已写入 `db/migration/`；**V2–V6 的 13 张未在任何数据库上执行过** |
+| 数据库 | 15 张表的 DDL 已写入 `db/migration/`，**全部在真实 PostgreSQL 16 + pgvector 上执行通过（含重复执行）** |
 | 阶段 | M1 完成，M1.5 完成，M2 起 |
 
 ```

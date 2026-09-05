@@ -225,10 +225,12 @@ OWL 与 SWRL 都单调、无否定即失败，表达不了「除非…否则…�
 | `uq_agent_step_idem UNIQUE (idempotency_key)` | I8 幂等。**多实例下应用层幂等会失效**，只有数据库约束是物理保证 |
 | `chk_approval_not_self CHECK (approver IS NULL OR approver <> requester)` | I3 不能复核自己。放应用层等于让人改一行代码就绕过 |
 
-> **⚠️ V2–V6 的 13 张表从未在任何数据库上执行过。**
-> 没有 PostgreSQL、没有 psql，测试作用域只有 H2，
-> 而 `PARTITION BY RANGE`（V3/V4）与 `vector(1024)` + HNSW（V5）H2 都不支持。
-> 详见 [5.数据库设计文档.md](5.数据库设计文档.md) §8.2 的风险清单。
+> **✅ V1–V6 已在真实 PostgreSQL 16 + pgvector 上执行通过，重复执行也通过。**
+> CI 里有独立的 `DDL on PostgreSQL 16 + pgvector` job（service 容器 `pgvector/pgvector:pg16`），
+> `information_schema` 报 18 张 = 15 张逻辑表 + 3 个 DEFAULT 分区，
+> `uq_agent_step_idem` 与 `chk_approval_not_self` 的存在性是硬断言。
+> 加这个 job 之前它们从未被任何数据库执行过——H2 不支持 `PARTITION BY RANGE`
+> 与 `vector(1024)`。详见 [5.数据库设计文档.md](5.数据库设计文档.md) §8.2。
 
 ---
 

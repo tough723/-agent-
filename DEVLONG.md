@@ -203,15 +203,8 @@
 
 见 [DEVELOPMENT.md](DEVELOPMENT.md) 的 M2 起。当前建议顺序：
 
-1. **在 CI 里用真实 PostgreSQL 跑一遍 V1–V6** —— 见下方 ⚠️，这必须排在写业务代码之前
-2. **`McpToolRegistrar`** —— M1 最后一项，堵住不变量 I14
-3. **`StubChatModel` + L2 测试** —— 覆盖 AI 编排逻辑又能进 CI 的唯一一层
-
-> **⚠️ V2–V6 的 13 张表 DDL 已写入，但从未在任何数据库上执行过。**
-> 当前环境没有 PostgreSQL 也没有 psql，测试作用域只有 H2，
-> 而 V3/V4 的 `PARTITION BY RANGE`、V5 的 `vector(1024)` + HNSW 三样 H2 都不支持。
-> 语法错误、分区顺序、`COMMENT ON` 的列名拼写都还没有被任何东西验证过。
-> schema 属于「改不了要重来」的那一类，晚发现的代价是非线性的。
+1. **`McpToolRegistrar`** —— M1 最后一项，堵住不变量 I14
+2. **`StubChatModel` + L2 测试** —— 覆盖 AI 编排逻辑又能进 CI 的唯一一层
 
 **本轮已完成（原第 2、3 项）**：
 
@@ -220,7 +213,15 @@
   「禁止在网关外调 `ToolCallback.call`」在静态分析下不可判定，
   能判定的是实现类的集合。
 - **M2 的 9 张表 DDL**（V2–V5）+ **轻量本体 4 张表**（V6），共 15 张。
+  **全部在真实 PostgreSQL 16 + pgvector 上执行通过，重复执行也通过**
+  （CI job `DDL on PostgreSQL 16 + pgvector`，run `33979708322`；
+  `information_schema` 报 18 张 = 15 张逻辑表 + 3 个 DEFAULT 分区）。
   两个数据库级不变量已落到约束上：`uq_agent_step_idem`（I8 幂等的物理保证）
-  与 `chk_approval_not_self`（I3 "不能复核自己"）。
+  与 `chk_approval_not_self`（I3 "不能复核自己"），
+  且这两个约束的存在性已写成 CI 断言。
+  > 刚写完时它们从未被任何数据库执行过（沙箱无 PostgreSQL，H2 不支持
+  > `PARTITION BY RANGE` 与 `vector(1024)`）。**与其在文档里写风险清单，
+  > 不如加一个数据库 service 容器**——清单只能让人知道有风险，
+  > 容器能让人知道没有风险。这个 job 现在是硬失败。
 - **`oncall-ontology` 模块** —— 概念层 / 关系层 / 4 条规则（R1–R4），
   有界遍历 + 实体链接，JDBC 实现在真实 H2 上测过。

@@ -22,7 +22,7 @@
 | 模块 | `oncall-domain`、`oncall-config`、`oncall-config-admin`、`oncall-tool-gateway`、`oncall-ontology`、`oncall-archtest`（仅测试） |
 | 测试 | 250 个用例 / 19 个测试类 |
 | 配置项 | 39 项（23 `RUNTIME_HOT` / 8 `REQUIRES_MIGRATION` / 8 `BACKEND_ONLY`） |
-| 数据库 | 15 张表的 DDL 已写入；**V2–V6 的 13 张未在任何数据库上执行过** |
+| 数据库 | 15 张表的 DDL 已写入，全部在真实 PostgreSQL 16 + pgvector 上执行通过（含重复执行） |
 | 阶段 | M1 / M1.5 完成，M2 起 |
 
 **这些数字会变。** 改完之后要同步 `DEVELOPMENT.md`，
