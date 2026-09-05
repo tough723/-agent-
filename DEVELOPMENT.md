@@ -11,20 +11,31 @@
 
 ### CI 已经验证通过（不是"待你验证"）
 
-`.github/workflows/ci.yml` 在每次 push 时用 JDK 17 + Maven 3.9.16 真实编译并跑测试。
-**最近一次全绿**：run `33952866933` / conclusion `success`。
+`.github/workflows/ci.yml` 在每次 push 时用 JDK 17 + Maven 3.9.16 真实编译并跑测试，
+另有一个独立的 job 用真实 PostgreSQL 16 + pgvector 跑 DDL。
+**最近一次全绿**：run `33980135605` / conclusion `success`（两个 job 都是）。
 
 | 步骤 | 结果 |
 |------|------|
-| Check all POM files are well-formed XML | ✅ |
+| Check all POM files are well-formed XML | ✅ 7 个 POM |
 | Validate POM model (all modules) | ✅ |
-| Record resolved Spring AI version | ✅ |
+| Record resolved Spring AI version | ✅ `spring-ai-model:1.1.6` |
 | Build & test `oncall-domain`（纯 Java，零外部依赖） | ✅ |
 | Build & test `oncall-config`（配置治理，纯 Java，零外部依赖） | ✅ |
+| Build & test `oncall-config-admin`（REST 接入层，依赖 Spring Web） | ✅ |
 | Build & test `oncall-tool-gateway`（依赖 Spring AI） | ✅ |
-| Assert tests actually ran | ✅ `报告文件=12 测试总数=148 失败=0 错误=0 跳过=0` |
+| Build & test `oncall-ontology`（轻量本体，纯 Java，零外部依赖） | ✅ |
+| Build & test `oncall-archtest`（架构约束 F1–F4、F9） | ✅ `archunit:1.4.2` |
+| Assert tests actually ran | ✅ `报告文件=19 测试总数=251 失败=0 错误=0 跳过=0` |
+| **DDL on PostgreSQL 16 + pgvector** | ✅ V1–V6 各 6/6，**重复执行也 6/6**，表数 **18** |
 
-**测试数字对得上**：12 个报告文件对应 12 个测试类，148 个测试对应本地 148 个 `@Test`。
+**测试数字对得上**：19 个报告文件对应 19 个测试类，251 = 已有 184 +
+`oncall-ontology` 59 + `oncall-archtest` 8。
+
+**DDL job 的两个断言**：`information_schema` 表数必须恰好 18
+（15 张逻辑表 + 3 个 DEFAULT 分区），`uq_agent_step_idem` 与
+`chk_approval_not_self` 必须各存在一条。数字变了说明有人动了 schema。
+
 `GuardedToolCallback` 编译通过，意味着 `ToolCallback` / `ToolDefinition` /
 `ToolMetadata.builder()` / `ToolContext` 这套签名在 Spring AI **1.1.6** 上是对的——
 F1 那块最关键的装饰器代码不再是"对照文档推测"。
