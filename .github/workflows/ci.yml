@@ -57,17 +57,20 @@ jobs:
           grep -Eo "org.springframework.ai:[a-z-]+:jar:[0-9][^ :]*" /tmp/spring-ai-tree.txt 2>/dev/null \
             | sort -u | head -8 | sed 's/^/::notice::AI-DEP /' || true
 
+      # 四个模块统一走这个模式：失败时把 [ERROR] 行与失败测试作为 annotation 发出。
+      # 原因是 CI 的 job 日志在开发沙箱里取不到（下载接口 SSL 失败），
+      # check-run annotation 是唯一可读的输出通道——没有它就等于闭着眼睛改。
       - name: Build & test oncall-domain (纯 Java，零外部依赖)
-        run: mvn -B -pl oncall-domain -am test
+        run: ./.github/mvn-test.sh oncall-domain
 
       - name: Build & test oncall-config (配置治理，纯 Java，零外部依赖)
-        run: mvn -B -pl oncall-config -am test
+        run: ./.github/mvn-test.sh oncall-config
 
       - name: Build & test oncall-config-admin (REST 接入层，依赖 Spring Web)
-        run: mvn -B -pl oncall-config-admin -am test
+        run: ./.github/mvn-test.sh oncall-config-admin
 
       - name: Build & test oncall-tool-gateway (依赖 Spring AI)
-        run: mvn -B -pl oncall-tool-gateway -am test
+        run: ./.github/mvn-test.sh oncall-tool-gateway
 
       # 引入 Spring Boot 后，通用件（spring-core / jackson）的版本由 Boot BOM 决定。
       # 这里把实际解析到的版本带出来，一旦与 Spring AI 的期望不符可以立刻看到，
