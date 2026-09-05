@@ -23,16 +23,23 @@ if [ "$rc" -ne 0 ]; then
   # annotation 的消息里 % 和回车必须转义，否则 GitHub 会解析错乱
   # 末尾的 || true 是必需的：脚本此处处于 set -e 且 pipefail 生效，
   # grep 没匹配到任何行会返回 1，直接让脚本以 1 退出并跳过下面的 tail。
-  grep -E "^\[ERROR\]|error:|BUILD FAILURE|cannot find symbol|符号|Tests run:.*(Failures: [1-9]|Errors: [1-9])|<<< (FAILURE|ERROR)" "$log" \
-    | head -80 \
+  # 只有首行不够：ERROR（抛异常）和 FAILURE（断言不符）的处置完全不同，
+  # 而区分它们要看栈。
+  #
+  # 注意 GitHub 的上限是「每个 run 每个级别 10 条 annotation」，
+  # 所以不能逐行发——上一轮发了 10 条 [ERROR] 首行，把栈全挤掉了。
+  # 这里把首个失败报告的关键段落压成【一条】多行 annotation（换行用 %0A 转义）。
+  grep -E "^\[ERROR\]|cannot find symbol|BUILD FAILURE" "$log" \
+    | head -6 \
     | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/^/::error::/' || true
 
-  # 只有首行不够：ERROR（抛异常）和 FAILURE（断言不符）的处置完全不同，
-  # 而区分它们要看栈。这里把失败测试的 surefire 报告头部也发出来。
-  while IFS= read -r rpt; do
+  rpt=$(grep -lE "Failures: [1-9]|Errors: [1-9]" "$module"/target/surefire-reports/*.txt 2>/dev/null | head -1 || true)
+  if [ -n "$rpt" ]; then
     echo "===== 失败测试报告: $rpt ====="
-    head -50 "$rpt" | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/^/::error::/' || true
-  done < <(grep -lE "Failures: [1-9]|Errors: [1-9]" "$module"/target/surefire-reports/*.txt 2>/dev/null || true)
+    # 跳过表头，取前 22 行栈；多行消息在 annotation 里必须用 %0A 表示换行
+    detail=$(sed -n '4,25p' "$rpt" | sed -e 's/%/%25/g' -e 's/\r//g' | paste -sd'|' - | sed 's/|/%0A/g')
+    echo "::error::[失败栈] $(basename "$rpt")%0A${detail}"
+  fi
 fi
 
 echo "----- ${module} 日志末尾 -----"
