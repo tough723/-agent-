@@ -22,9 +22,9 @@
 | Build & test `oncall-domain`（纯 Java，零外部依赖） | ✅ |
 | Build & test `oncall-config`（配置治理，纯 Java，零外部依赖） | ✅ |
 | Build & test `oncall-tool-gateway`（依赖 Spring AI） | ✅ |
-| Assert tests actually ran | ✅ `报告文件=10 测试总数=104 失败=0 错误=0 跳过=0` |
+| Assert tests actually ran | ✅ `报告文件=12 测试总数=148 失败=0 错误=0 跳过=0` |
 
-**测试数字对得上**：10 个报告文件对应 10 个测试类，104 个测试对应本地 104 个 `@Test`。
+**测试数字对得上**：12 个报告文件对应 12 个测试类，148 个测试对应本地 148 个 `@Test`。
 `GuardedToolCallback` 编译通过，意味着 `ToolCallback` / `ToolDefinition` /
 `ToolMetadata.builder()` / `ToolContext` 这套签名在 Spring AI **1.1.6** 上是对的——
 F1 那块最关键的装饰器代码不再是"对照文档推测"。
@@ -147,8 +147,11 @@ oncall-agent/
 │       ├── ConfigAuditLog.java          审计端口 + InMemory 实现
 │       ├── OnCallConfigKeys.java        36 个配置键常量
 │       ├── OnCallConfigRegistry.java    36 项参数声明（逐条对应文档冻结清单）
-│       └── schema/ConfigSchemaExporter.java  前端 JSON schema 导出（手写，零依赖）
-│   └── src/test/java/...                4 个测试类，64 个用例
+│       ├── schema/ConfigSchemaExporter.java  前端 JSON schema 导出（手写，零依赖）
+│       └── store/
+│           ├── JdbcConfigStore.java     配置覆盖值持久化（墓碑行 + 方言无关 upsert）
+│           └── JdbcConfigAuditLog.java  配置变更审计持久化
+│   └── src/test/java/...                5 个测试类（JDBC 用 H2 内存库跑真 SQL）
 └── oncall-tool-gateway/                 ✅ P0 安全核心
     └── src/main/java/com/oncall/toolgateway/
         ├── ToolPolicyEngine.java        默认拒绝 + 拒绝事件上报
@@ -159,6 +162,7 @@ oncall-agent/
         ├── IdempotencyStore.java
         └── ArgClamper.java              Strategy：参数夹紧
     └── src/test/java/.../ToolPolicyEngineTest.java       10 个用例
+        └── GuardedToolCallbackTest.java  24 个用例：七道关卡 + 关卡顺序 + 三条安全性质
 ```
 
 **这三个模块都是纯逻辑，没有 Spring 上下文**——`oncall-domain` 与 `oncall-config` 完全零依赖，`oncall-tool-gateway` 只有 `GuardedToolCallback` 一个类碰 Spring AI。这样即使 Spring AI 坐标要调，90% 的代码不受影响。
@@ -191,15 +195,31 @@ oncall-agent/
 | 规范化升级 | `canonical()` 现在只去空白；应改为 Jackson 读 `TreeMap` 再序列化，消除 key 顺序影响 |
 | `WecomApprovalGate` | 企微卡片 + `expires_at` + 超时升级 + 双人复核 |
 | `McpToolRegistrar` | 关掉自动注册后显式纳管 + 打 `mcp:<server>:` 前缀 + 启动快照比对 |
-| `GuardedToolCallbackTest` | **关键**：用 fake `ToolCallback` 验证七道关卡逐个生效（需 Spring AI 在 test classpath） |
 | `AutonomyLevel` 接入调用链 | 与 `KillSwitch` 取交集：先 `assertAllowed()` 再 `canAutoExecute()` |
+
+**已完成**：`GuardedToolCallbackTest`（24 个用例，见下）。
 
 **验收**（对应修复方案 F1.7）：
 - [ ] 未注册工具 → `ToolDeniedException` + 有拒绝审计
 - [ ] MCP 运行期新增工具 → 不暴露 + 告警
 - [ ] `scale_replicas` 传 `replicas: 0` → 夹到 `minReplicas` + clamped 审计
 - [ ] kill switch 切 `READ_ONLY` → 写工具立即被拒（无需重启）
-- [ ] 同一幂等键重复调用 → 只执行一次
+- [x] 同一幂等键重复调用 → 只执行一次
+
+**`GuardedToolCallbackTest` 已落地（24 个用例）**——F1 的验收点。
+此前 `GuardedToolCallback` 只是"编译通过"，七道关卡一个测试都没有。
+测试不只验证每道关卡单独生效，还验证**关卡之间的先后关系**（顺序不可调换）：
+
+| 顺序断言 | 为什么顺序重要 |
+|---------|--------------|
+| ① 默认拒绝 在 ② kill switch 之前 | 否则未注册工具的存在性会被错误信息泄露 |
+| ② kill switch 在 ③ 参数夹紧之前 | 否则被禁的工具还会留下夹紧审计，制造噪音与误导 |
+| ④ 幂等 在 ⑤ 审批之前 | 否则重放会二次打扰审批人 |
+
+另外三条安全性质也做了断言：
+- 执行失败时**异常必须继续抛出**（不能被审计逻辑吞掉），且失败结果**不能**被当成可重放的成功结果；
+- 审批人看到的必须是**夹紧后**的参数——否则批的不是真正会执行的东西；
+- kill switch 是**热生效**的，切档后同一个装饰器实例的下一次调用立即改变行为，无需重建。
 
 ### M1.5 — 配置治理与前端可配置化（本轮新增，✅ 已完成）
 
@@ -235,7 +255,21 @@ DDL 绑定项（向量维度/距离函数/索引类型——改了是数据迁�
 另有跨模块的 `ConfigEnumAlignmentTest`（在 `oncall-tool-gateway`），
 守配置里的字符串取值与 `AutonomyLevel` / `RunMode` 枚举逐一对应——这类错位没有编译期保护。
 
-**待做**：`JdbcConfigStore`（否则配置重启即丢）→ 管理 REST 接口 + RBAC →
+**已完成**：`JdbcConfigStore` + `JdbcConfigAuditLog`（`com.oncall.config.store`）
++ `db/migration/V1__config_governance.sql`。此前只有内存实现，配置重启即丢。
+
+JDBC 实现有三个不显眼但会出事的决定：
+
+| 决定 | 不这么做会怎样 |
+|------|--------------|
+| `remove` 用**墓碑行**（值置 NULL）而非 DELETE | `revision()` 取 `MAX(revision)`，真删行会让修订号倒退，`ConfigService` 的快照缓存会误判"没变化"而**读到旧值** |
+| upsert 先 UPDATE 再按影响行数 INSERT | H2 的 `MERGE INTO` 与 PostgreSQL 的 `ON CONFLICT` 不通用，用任一方言都只能跑在一个库上 |
+| 只用 JDK 的 `javax.sql`/`java.sql` | 引 Spring JDBC 会破坏本模块"生产代码零外部依赖"的约束（H2 只在 test scope） |
+
+测试用 **H2 内存库跑真 SQL**（`2.3.232`，test scope）。mock `Connection` 只能证明
+"我以为的 SQL 是我以为的 SQL"，证明不了语句真能执行——列名拼错、方言不兼容只有真库能抓到。
+
+**待做**：管理 REST 接口 + RBAC + 高危项二次确认 →
 把业务代码接到 `ConfigService` 并用 ArchUnit 禁止模块外出现 `@Value` →
 Prompt 模板配置化（必须连带双人复核）。
 
