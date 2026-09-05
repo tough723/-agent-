@@ -1,10 +1,18 @@
-package com.oncall.config.admin;
+package com.oncall.domain.governance;
 
 import java.util.Locale;
 import java.util.Objects;
 
 /**
- * 发起配置操作的人。
+ * 发起一次<b>受治理变更</b>的人。
+ *
+ * <p><b>为什么放在 {@code oncall-domain} 而不是 {@code oncall-config-admin}</b>：
+ * 「谁在动手」不是配置模块的私有概念。配置项变更与工具白名单变更
+ * 走的是同一套双人复核规则（见 {@link TwoPersonReview}），
+ * 身份类型必须只有一份——否则两处的角色枚举会各自演化，
+ * 而"ADMIN 在配置侧能复核、在工具侧不能"这种分歧不会有任何报错。
+ *
+ * <p>原先这个类在 {@code com.oncall.config.admin}，本轮移到领域层。
  *
  * <p>生产环境应由网关从 JWT / SSO 解出后写入请求头，<b>不能由前端自行声明</b>——
  * 否则任何人都可以把 {@code X-Operator-Role} 填成 ADMIN。本模块只负责读取与判定，

@@ -8,6 +8,11 @@ import com.oncall.config.ConfigService.ConfigView;
 import com.oncall.config.ConfigSpec;
 import com.oncall.config.ValidationResult;
 import com.oncall.config.schema.ConfigSchemaExporter;
+import com.oncall.domain.governance.Operator;
+import com.oncall.domain.governance.ReviewOutcome;
+import com.oncall.domain.governance.ReviewRequest;
+import com.oncall.domain.governance.ReviewVerdict;
+import com.oncall.domain.governance.TwoPersonReview;
 
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -198,12 +203,22 @@ public class ConfigAdminController {
     /**
      * 复核通过一个待复核变更。
      *
-     * <p>三道检查，缺一不可：
-     * <ol>
-     *   <li>复核者必须是 ADMIN；</li>
-     *   <li><b>复核者不能是发起人</b>——否则"双人"就是同一个人点两次；</li>
-     *   <li>该键在发起后没被别人改过——否则复核者判断的依据已经失效。</li>
-     * </ol>
+     * <p><b>判定本身不在这里</b>——四条规则与它们的先后顺序全部委托给
+     * {@link TwoPersonReview}（领域层）。这里只做三件事：
+     * 取单子、把判定结果映射成 HTTP 状态码、清掉已失效的单子。
+     *
+     * <p>为什么必须委托而不是在这里再写一遍：工具白名单变更
+     * （{@code oncall-tool-gateway}）走的是<b>同一套</b>复核规则。
+     * 两处各写一遍一定会分叉，而「配置侧不允许自审、工具侧忘了这一条」
+     * 在功能测试里完全看不出来——只有真的有人自审自批时才会暴露。
+     *
+     * <p><b>状态码映射</b>（四种拒绝刻意不同码，前端要给出不同的处置）：
+     * <ul>
+     *   <li>{@code EXPIRED} → 410 Gone：重新发起</li>
+     *   <li>{@code NOT_AUTHORIZED} → 403 Forbidden：换人</li>
+     *   <li>{@code SELF_APPROVAL} → 409 Conflict：换人</li>
+     *   <li>{@code STALE} → 409 Conflict：重新发起</li>
+     * </ul>
      */
     @PostMapping("/pending/{id}/confirm")
     public ConfigWriteResponse confirm(@PathVariable("id") String id,
@@ -211,28 +226,46 @@ public class ConfigAdminController {
                                        @RequestHeader(name = HEADER_OPERATOR, required = false) String principal,
                                        @RequestHeader(name = HEADER_ROLE, required = false) String role) {
         Operator operator = requireAuthenticated(principal, role);
-        PendingChange pending = livePendingOrThrow(id);
+        PendingChange pending = requirePending(id);
 
-        if (!policy.canApprove(operator)) {
-            throw AdminApiException.forbidden("复核高危配置变更需要 ADMIN 权限");
-        }
-        if (pending.requester().equals(operator.principal())) {
-            throw AdminApiException.conflict("不能复核自己发起的变更——双人复核的意义在于两个独立的判断");
-        }
-        ConfigSpec spec = registry.require(pending.key());
+        // 读当前值只进局部变量：只有判定为 STALE 时它才会出现在提示语里，
+        // 而 TwoPersonReview 保证 STALE 只对「有权且非自审」的人产出。
         String current = service.get(pending.key());
-        if (pending.staleAgainst(current)) {
-            pendingStore.remove(id);
-            throw AdminApiException.conflict(
-                    "该配置项在发起复核后已被其他人修改（发起时 " + pending.oldValue()
-                            + "，现在 " + current + "），本次复核已失效，请重新发起");
+        ReviewOutcome outcome = TwoPersonReview.evaluate(new ReviewRequest(
+                "配置项 " + pending.key(),
+                pending.requester(),
+                pending.expiresAtMillis(),
+                pending.oldValue(),
+                current,
+                operator), clock.getAsLong());
+
+        if (!outcome.allowed()) {
+            // 过期与失效的单子已经没意义了，删掉，避免被反复复核。
+            // 「无权」与「自审」不删：那张单子本身是好的，换个人就该能复核。
+            if (outcome.verdict() == ReviewVerdict.EXPIRED || outcome.verdict() == ReviewVerdict.STALE) {
+                pendingStore.remove(id);
+            }
+            throw toHttpStatus(outcome);
         }
 
+        // 放在判定之后：未通过复核的调用方不该通过 404/500 的差异
+        // 探出这个键在注册表里的存在性。
+        ConfigSpec spec = registry.require(pending.key());
         pendingStore.remove(id);
         String effectiveReason = (reason == null || reason.isBlank())
                 ? pending.reason()
                 : pending.reason() + " / 复核：" + reason.trim();
         return apply(spec, pending.newValue(), operator.principal(), effectiveReason, true);
+    }
+
+    /** 把领域层的判定映射成 HTTP 状态码。判定逻辑不在这里，映射才在。 */
+    private static AdminApiException toHttpStatus(ReviewOutcome outcome) {
+        return switch (outcome.verdict()) {
+            case EXPIRED -> AdminApiException.gone(outcome.message());
+            case NOT_AUTHORIZED -> AdminApiException.forbidden(outcome.message());
+            case SELF_APPROVAL, STALE -> AdminApiException.conflict(outcome.message());
+            case ALLOWED -> throw new IllegalStateException("ALLOWED 不该走到异常映射");
+        };
     }
 
     /** 驳回一个待复核变更。发起人自己也可以驳回。 */
@@ -242,7 +275,13 @@ public class ConfigAdminController {
                                        @RequestHeader(name = HEADER_OPERATOR, required = false) String principal,
                                        @RequestHeader(name = HEADER_ROLE, required = false) String role) {
         Operator operator = requireAuthenticated(principal, role);
-        PendingChange pending = livePendingOrThrow(id);
+        PendingChange pending = requirePending(id);
+        // 驳回走的是另一条路径（不经过双人复核判定），所以过期检查留在这里。
+        // 过期单直接当不存在处理：留着它只会让人以为还能驳回。
+        if (pending.isExpired(clock.getAsLong())) {
+            pendingStore.remove(id);
+            throw AdminApiException.gone("待复核单已过期，无需驳回");
+        }
         if (!policy.canApprove(operator) && !pending.requester().equals(operator.principal())) {
             throw AdminApiException.forbidden("只有复核人或发起人可以驳回");
         }
@@ -276,15 +315,16 @@ public class ConfigAdminController {
         return ConfigWriteResponse.applied(spec.key(), oldValue, service.get(spec.key()), highRisk);
     }
 
-    private PendingChange livePendingOrThrow(String id) {
-        PendingChange pending = pendingStore.find(id)
+    /**
+     * 取一张待复核单，不存在则 404。
+     *
+     * <p><b>刻意不在这里判过期</b>：过期是复核判定的一条规则，
+     * 由 {@link TwoPersonReview} 统一负责。在这里先抛 410 会让
+     * 「过期」这条规则有两个实现，而工具策略那侧只会有一个。
+     */
+    private PendingChange requirePending(String id) {
+        return pendingStore.find(id)
                 .orElseThrow(() -> AdminApiException.notFoundMessage("待复核单不存在：" + id));
-        if (pending.isExpired(clock.getAsLong())) {
-            pendingStore.remove(id);
-            throw AdminApiException.gone("待复核单已过期，请重新发起——"
-                    + "隔了这么久，系统状态可能已经变了，当时的判断不再成立");
-        }
-        return pending;
     }
 
     /**

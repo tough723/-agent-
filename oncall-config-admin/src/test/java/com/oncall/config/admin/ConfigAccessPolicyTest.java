@@ -5,6 +5,7 @@ import com.oncall.config.ConfigSpec;
 import com.oncall.config.ConfigTier;
 import com.oncall.config.OnCallConfigKeys;
 import com.oncall.config.OnCallConfigRegistry;
+import com.oncall.domain.governance.Operator;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

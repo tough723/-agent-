@@ -208,7 +208,7 @@
 | **知识库清单** | 不知道有多少文档、什么格式、谁维护 ⇒ 无法估算索引成本与冷启动周期 | 找知识库的实际负责人盘点 |
 | **CMDB 的告警→服务映射** | 没有映射就无法自动定位影响面，也无法 @ 对人 | 确认 CMDB 是否有这个关系，覆盖率多少 |
 | **成本模型的真实聚合率** | 现在的 15% 是**假设值**，成本承诺全是空的 | W3 用真实数据修正 |
-| **工具白名单（`ToolPolicy`）没有变更治理路径** | 白名单是整个安全模型的事实来源——加一条 MCP 工具策略就等于放行一个远端工具。但配置治理那套（可见性分级 / 双人复核 / 待复核单 / 审计）只覆盖 `OnCallConfigRegistry`，**不覆盖 `ToolPolicyEngine`**。现在加策略是改代码或改 DB，没有第二人复核，也没有"谁在什么时候放行了什么"的可查记录 | 把工具策略纳入与配置同等的治理：变更走待复核单 + 双人 + 审计。这一条的优先级高于任何新功能 |
+| **工具白名单（`ToolPolicy`）没有变更治理路径**（🟡 进行中） | 白名单是整个安全模型的事实来源——加一条 MCP 工具策略就等于放行一个远端工具。但配置治理那套（可见性分级 / 双人复核 / 待复核单 / 审计）只覆盖 `OnCallConfigRegistry`，**不覆盖 `ToolPolicyEngine`**。现在加策略是改代码或改 DB，没有第二人复核，也没有"谁在什么时候放行了什么"的可查记录 | 把工具策略纳入与配置同等的治理：变更走待复核单 + 双人 + 审计。这一条的优先级高于任何新功能。**第一步已完成**：双人复核的决策核心（`TwoPersonReview` + `Operator`）已从 `oncall-config-admin` 下沉到 `oncall-domain`，两侧共用一份规则，见 [DEVELOPMENT.md](DEVELOPMENT.md) §1.6。**剩下的**是工具策略侧的待复核单存储、变更审计与接入点 |
 | **`ToolAuditLog` 的方法签名喂不满 `tool_audit_log` 的必填列** | V2 的 `tool_audit_log` 要求 `trace_id` / `tool_source` / `risk_level` / `args_masked` / `gate_outcome` 全部 `NOT NULL`，而 `recordSuccess(idempotencyKey, toolName, args, result)` **一个都给不出**：没有 trace，分不清 LOCAL 与 MCP，没有风险级，`gate_outcome` 只能靠方法名反推（`recordClamped` 与 `recordApproval` 之间还分不清 `PASSED` / `CLAMPED`），`args` 还是未脱敏原文而列名叫 `args_masked`。⇒ **`JdbcToolAuditLog` 现在写不出来**；硬写只能往必填列塞假值，而一张字段造假的审计表比没有审计更糟 | 把审计上下文（trace / source / riskLevel / gateOutcome / 脱敏后的参数）作为显式参数传进来，而不是让实现去猜。会动到 `GuardedToolCallback` 全部审计调用点，属独立一轮 |
 
 > 第四条是这么被发现的：我本来加了一个 `mcp.allowed-servers` 配置项并把它放进
@@ -241,13 +241,24 @@
 
 ### 轨道 A：补安全治理的缺口（优先级高于任何新功能）
 
-1. **把工具白名单（`ToolPolicy`）纳入变更治理** —— 见 §9 第四项。
+1. **把工具白名单（`ToolPolicy`）纳入变更治理** —— 见 §9 第四项。🟡 第一步已完成。
+
    白名单是整个安全模型的事实来源，加一条 MCP 工具策略就等于放行一个远端工具，
    但现在既没有双人复核也没有"谁在什么时候放行了什么"的可查记录。
    配置治理那一套（可见性分级 / 待复核单 / 双人 / 审计）已经写好且测过，
    把它复用到工具策略上，是**已有机制的复用**而不是新造轮子。
    > 这一条是实现 MCP 纳管时暴露出来的：我当时给"连接"加了双人复核，
    > 却发现真正承重的"授权"根本没有治理。
+
+   **A1 已完成**：`TwoPersonReview` + `Operator` 下沉到 `oncall-domain`，
+   `ConfigAdminController.confirm()` 改为委托它，本地只做 HTTP 状态码映射。
+   刻意不复制一份复核逻辑到工具侧——两份一定会分叉，而分叉不会报错。
+   19 个用例，其中两条守的是**判定顺序**：角色判定必须在"期间已被改过"之前，
+   否则 VIEWER 能从错误消息里读出当前生效值。
+
+   **A2 待做**：`ToolPolicyChangeRequest` + 待复核单存储 + 工具策略变更审计，
+   在 `oncall-tool-gateway` 侧调用同一个 `TwoPersonReview`。
+   **A3 待做**：接入点（谁触发、走不走 REST）。
 
 ### 轨道 B：AI 那一半的第一块（当前 6 个 AI 组件的代码文件数仍是 0）
 
@@ -281,6 +292,9 @@
   > 容器能让人知道没有风险。这个 job 现在是硬失败。
 - **`oncall-ontology` 模块** —— 概念层 / 关系层 / 4 条规则（R1–R4），
   有界遍历 + 实体链接，JDBC 实现在真实 H2 上测过。
+- **`TwoPersonReview` 决策核心（`oncall-domain`）** —— 双人复核的规则
+  （过期 / 角色 / 不能自审 / 期间已被改过）**只有一份**，
+  配置侧与工具侧共用。含判定顺序的两条安全断言，见 [DEVELOPMENT.md](DEVELOPMENT.md) §1.6。
 - **幂等账本 `tool_execution_claim`（V7）+ `ToolExecutionLedger` 三件套** ——
   给不变量 I8 补上真正的物理保证。原先第④关是"先查后写"+ 内存态，
   多实例与并发下都不成立（详见 [DEVELOPMENT.md](DEVELOPMENT.md) §1.5）。

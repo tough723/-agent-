@@ -3,6 +3,7 @@ package com.oncall.config.admin;
 import com.oncall.config.ConfigSpec;
 import com.oncall.config.ConfigTier;
 import com.oncall.config.OnCallConfigKeys;
+import com.oncall.domain.governance.Operator;
 
 import java.util.Set;
 

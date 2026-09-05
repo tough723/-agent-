@@ -34,6 +34,18 @@
     </dependency>
 
     <!--
+      领域层：Operator 与 TwoPersonReview（双人复核的决策核心）住在这里。
+      刻意不在本模块复制一份复核逻辑——工具白名单变更（oncall-tool-gateway）
+      走的是同一套规则，两处各写一遍一定会分叉，而分叉不会报错。
+      依赖方向 admin -> domain，不反向。
+    -->
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-domain</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
       只用 starter-web 里的 spring-web / spring-webmvc / jackson。
       不引 spring-boot-starter（自动装配）——本模块只提供 Controller，
       由最终的应用模块决定如何装配，避免在库模块里埋 @SpringBootApplication。

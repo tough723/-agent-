@@ -13,8 +13,9 @@
 
 `.github/workflows/ci.yml` 在每次 push 时用 JDK 17 + Maven 3.9.16 真实编译并跑测试，
 另有一个独立的 job 用真实 PostgreSQL 16 + pgvector 跑 DDL。
-**最近一次全绿**：run `33984843271` / conclusion `success`（两个 job 都是），
-commit `93b31fb`。下表是那次实测的数字（读自 check-run annotations，不是预测值）。
+**最近一次全绿**：run `33985198351` / conclusion `success`（两个 job 都是），
+commit `a5553e5`。下表是那次实测的数字（读自 check-run annotations，不是预测值）。
+本轮（§1.6 双人复核核心下沉）的预期数字见该节末尾——CI 跑完前不写成"已验证"。
 
 | 步骤 | 结果 |
 |------|------|
@@ -168,14 +169,14 @@ oncall-agent/
 │   └── src/test/java/...                5 个测试类（JDBC 用 H2 内存库跑真 SQL）
 ├── oncall-config-admin/                 ✅ 配置治理的 REST 接入层（本轮新增）
 │   └── src/main/java/com/oncall/config/admin/
-│       ├── ConfigAdminController.java   读/写/双人复核/重载
-│       ├── Operator.java                操作人 + 三级角色（刻意没有超级管理员）
+│       ├── ConfigAdminController.java   读/写/双人复核/重载（复核判定委托领域层，见 §1.6）
 │       ├── ConfigAccessPolicy.java      权限判定 + 高危键清单（硬编码，不可配置）
 │       ├── PendingChange.java           待复核单：带 TTL 与"期间被改过"检测
 │       ├── PendingChangeStore.java      端口 + InMemory 实现
 │       ├── ConfigItemView.java          前端视图 DTO（敏感值掩码）
 │       └── AdminApiException.java       统一异常 → HTTP 状态码
 │   └── src/test/java/...                3 个测试类（MockMvc standaloneSetup）
+│       （Operator 与双人复核判定已移到 oncall-domain，见 §1.6）
 └── oncall-tool-gateway/                 ✅ P0 安全核心（17 个生产类）
     └── src/main/java/com/oncall/toolgateway/
         ├── ToolPolicyEngine.java        默认拒绝 + 拒绝事件上报 + mcpServers() 反推
@@ -406,6 +407,80 @@ void recordSuccess(String idempotencyKey, String toolName, String args, String r
 而一张字段造假的审计表比没有审计更糟（它让人相信查过了）。
 这条已记入 [DEVLONG.md](DEVLONG.md) §9，改接口会动到 `GuardedToolCallback`
 全部审计调用点，属于独立一轮的工作，本轮不夹带。
+
+### 1.6 双人复核决策核心下沉到领域层（轨道 A 第一步）
+
+```
+oncall-domain/src/main/java/com/oncall/domain/governance/
+├── Operator.java            从 com.oncall.config.admin **移过来**：操作人 + 三级角色
+├── ReviewVerdict.java       五个封闭值：ALLOWED / EXPIRED / NOT_AUTHORIZED / SELF_APPROVAL / STALE
+├── ReviewRequest.java       判定输入（纯数据，不碰存储）
+├── ReviewOutcome.java       判定 + 给人看的话
+└── TwoPersonReview.java     四条规则与它们的先后顺序
+
+oncall-domain/src/test/java/.../governance/
+└── TwoPersonReviewTest.java  19 个用例
+
+oncall-config-admin
+├── ConfigAdminController    confirm() 改为委托 TwoPersonReview，本地只做 HTTP 状态码映射
+└── Operator.java            **已删除**（移到领域层）
+```
+
+#### 为什么这一步要先做
+
+`ToolPolicy`（工具白名单）是整个安全模型的事实来源——加一条 MCP 工具策略
+等于放行一个远端工具——但它**没有变更治理**：没有双人复核，
+也没有"谁在什么时候放行了什么"的可查记录（[DEVLONG.md](DEVLONG.md) §9 第四项）。
+
+配置侧那一套（待复核单 / 双人 / 不能自审 / 过期失效 / 期间被改过则失效）
+已经写好且测过。**直接复制一份到工具侧是最省事也最错的做法**：
+两份复核逻辑一定会分叉，而分叉不会报错——
+「配置侧不允许自审、工具侧忘了这一条」在所有功能测试里都是绿的，
+只有真的有人自审自批时才会暴露，而那时事故已经发生。
+所以先把规则抽成一份，两边都只当调用方。
+
+#### 关键设计
+
+| 关键设计 | 为什么 |
+|---------|--------|
+| 判定是**纯函数**，不访问存储 | 四条规则能被穷举单测；读当前值、删待复核单、写审计都是调用方的事。规则与存储混在一起时，测一条规则就要搭一套存储 |
+| 「需要 ADMIN」**不做成参数** | 写成 `Predicate<Operator>` 会让调用方有机会传恒真判断。守卫自己的东西不能交给被守卫的对象——与 `HIGH_RISK_KEYS` 刻意硬编码同一个理由 |
+| 五个判定值而不是布尔 | 四种拒绝要映射到不同状态码（410/403/409/409），前端处置也不同：过期要重走流程，自审要换人。合成布尔就在 UI 上变成同一句"操作失败" |
+| 没有 `force` 入口，没有超级管理员角色 | 高危变更需要的是「另一个人也同意」，不是「某人权限更大」 |
+| 过期判定**从 `ConfigAdminController` 移进核心** | 原先过期检查在 `livePendingOrThrow` 里，属于第二条实现。工具策略那侧只会有一个核心，两处不一致就没人发现 |
+
+#### 顺序是承重的，而且有测试守着
+
+```
+① 过期  →  ② 角色不足  →  ③ 不能自审  →  ④ 期间已被改过
+```
+
+**② 必须排在 ④ 之前**：④ 的提示语里含**当前生效值**
+（`发起时 X，现在 Y`）。若顺序颠倒，一个 VIEWER 就能靠反复发起复核，
+从错误消息里把当前生效值一条条读出来——`BACKEND_ONLY` 的键对前端是 404
+（连存在性都不泄露），却会从这条错误消息里漏出值，**比 404 更糟**。
+
+这条不是靠读代码时的自觉，而是两条直接断言：构造一个
+「VIEWER + 值已被改成 `BOUND_AUTO_SECRET`」的输入，
+断言返回 `NOT_AUTHORIZED` **且消息里不含那个值**；自审同理。
+
+#### 行为未变，只是搬了家
+
+`ConfigAdminController` 的 HTTP 语义逐条保持：自审 409、EDITOR 复核 403、
+过期 410、期间被改过 409 且清掉单子、复核单只能用一次、
+不存在的单 404。**`ConfigAdminControllerTest` 的 24 个用例一字未改**，
+全靠新核心通过——这就是"行为没变、只是搬了家"的证据。
+`ConfigAccessPolicyTest` 只改了 import 行（`Operator` 换包），8 个断言未动。
+
+#### 本轮改动的预期数字（CI 跑完前不写成"已验证"）
+
+| 指标 | `a5553e5` 实测 | 本轮预测 | 依据 |
+|------|---------------|---------|------|
+| 测试类 / 报告文件 | 22 | **23** | 新增 `TwoPersonReviewTest` |
+| 测试用例 | 304 | **323** | +19，逐文件 `@Test` 清点 |
+| `oncall-domain` | 11 类 / 16 用例 | **16 类 / 35 用例** | +5 类（Operator 移入 + 4 个新类）/+19 用例 |
+| `oncall-config-admin` | 12 类 / 35 用例 | **11 类 / 35 用例** | Operator 移出，用例数不变 |
+| 生产类合计 | 78 | **82** | +5 −1 |
 
 ---
 
