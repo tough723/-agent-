@@ -13,8 +13,8 @@
 
 `.github/workflows/ci.yml` 在每次 push 时用 JDK 17 + Maven 3.9.16 真实编译并跑测试，
 另有一个独立的 job 用真实 PostgreSQL 16 + pgvector 跑 DDL。
-**最近一次全绿**：run `33985929578` / conclusion `success`（两个 job 都是），
-commit `de5ae41`。下表是那次实测的数字（读自 check-run annotations，不是预测值）。
+**最近一次全绿**：run `33986641697` / conclusion `success`（两个 job 都是），
+commit `90bd81e`。下表是那次实测的数字（读自 check-run annotations，不是预测值）。
 
 | 步骤 | 结果 |
 |------|------|
@@ -27,12 +27,12 @@ commit `de5ae41`。下表是那次实测的数字（读自 check-run annotations
 | Build & test `oncall-tool-gateway`（依赖 Spring AI） | ✅ |
 | Build & test `oncall-ontology`（轻量本体，纯 Java，零外部依赖） | ✅ |
 | Build & test `oncall-archtest`（架构约束 F1–F4、F9） | ✅ `archunit:1.4.2` |
-| Assert tests actually ran | ✅ `报告文件=23 测试总数=323 失败=0 错误=0 跳过=0` |
+| Assert tests actually ran | ✅ `报告文件=25 测试总数=365 失败=0 错误=0 跳过=0` |
 | **DDL on PostgreSQL 16 + pgvector** | ✅ V1–V7 各 7/7，**重复执行也 7/7**，表数 **19** |
 
-**测试数字对得上**：23 个报告文件对应 23 个测试类，323 =
-domain 35 + config 82 + config-admin 35 + tool-gateway 104 + ontology 59 + archtest 8。
-其中 domain 的 35 = 上一轮 16 + 双人复核核心 19（见 §1.6）。
+**测试数字对得上**：25 个报告文件对应 25 个测试类，365 =
+domain 35 + config 82 + config-admin 35 + tool-gateway 146 + ontology 59 + archtest 8。
+其中 tool-gateway 的 146 = 104 + 工具策略治理 42（见 §1.7）。
 
 **DDL job 的断言**：`information_schema` 表数必须恰好命中期望值
 （本轮起是 19 = 16 张逻辑表 + 3 个 DEFAULT 分区），`uq_agent_step_idem`、
@@ -570,12 +570,36 @@ oncall-tool-gateway/src/test/java/.../governance/
 
 #### 本轮改动的预期数字（CI 跑完前不写成"已验证"）
 
-| 指标 | `de5ae41` 实测 | 本轮预测 | 依据 |
-|------|---------------|---------|------|
-| 测试类 / 报告文件 | 23 | **25** | 新增 `PolicyRiskDeltaTest`、`ToolPolicyGovernanceTest` |
-| 测试用例 | 323 | **364** | +17 +24 = +41，逐文件 `@Test` 清点 |
-| `oncall-tool-gateway` | 20 类 / 104 用例 | **29 类 / 145 用例** | +9 类 / +41 用例 |
-| 生产类合计 | 82 | **91** | +9 |
+| 指标 | `de5ae41` 实测 | 本轮预测 | **run `33986641697` 实测** |
+|------|---------------|---------|-------------------------------|
+| 测试类 / 报告文件 | 23 | 25 | ✅ **25** |
+| 测试用例 | 323 | 365 | ✅ **365**（失败 0 / 错误 0 / 跳过 0） |
+| `oncall-tool-gateway` | 20 类 / 104 用例 | 29 类 / 146 用例 | 本地清点 29 / 146（CI 不分模块报数） |
+| 生产类合计 | 82 | 91 | 本地清点 91（CI 不统计此项） |
+
+> 预测与实测逐项吻合。中间红过一次（run `33986494127`），
+> 见下节——**那一次是生产代码的缺陷，不是断言写错**。
+
+#### 第一次 CI 红出来的东西：审计排序不确定
+
+run `33986494127` 只红了一条：`requesterCanReject` 期望 `REJECTED`、实得 `PROPOSED`。
+**这不是测试写错，是生产代码的缺陷。**
+
+审计条目原先只按 `System.currentTimeMillis()` 排序。发起与驳回落在
+**同一毫秒**是正常操作而不是边缘情况，两条记录时间戳相同 ⇒ 顺序不确定 ⇒
+`recent(1)` 可能返回先发生的那条。
+
+后果不只是测试随机红：**「先发起还是先被拒」是事后追责时要回答的问题，
+它必须有唯一答案。** 一个顺序不确定的审计日志，在真正需要它的时候是不可用的。
+
+两条修法都做了：
+
+| 改动 | 为什么 |
+|------|--------|
+| `Entry` 增加 `seq`（插入序号），排序改为 `(atMillis, seq)`，比较器抽成 `Entry.order()` | 给同一毫秒内的事件定序。这是审计的必备属性，不是实现细节 |
+| 事件时刻由 `ToolPolicyGovernance` 传入，审计实现不再自己取时钟 | 治理服务持有可注入时钟用于测过期；审计若另取 `System.currentTimeMillis()`，同一流程里就有两个时钟，测试推进了一个另一个不动。**这个"两个时钟"的坑本项目已经踩过一次** |
+
+并补了一条专门断言：整段流程不推进时钟，三条审计事件仍必须按发生顺序排列。
 
 ---
 

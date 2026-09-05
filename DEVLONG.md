@@ -152,6 +152,8 @@
 | **修正后又只给了成本理由，且概念模型有错** | 被追问"是否真的掌握这套方法论"后用 CQ 与 OntoClean 重做，查出 `CoreService` 不该是子类（非刚性），已改为 `criticality` 属性。否决 OWL 的真正理由是**语义不匹配**（OWA / 单调性 / 变更速度），不是成本 |
 | **F9 的原始表述根本不可静态判定** | 文档里写的是"用 ArchUnit 禁止在网关之外直接调用 `ToolCallback.call`"。但编排层与 Spring AI 内部**必须**调 `call`，ArchUnit 无法区分"调的是被包装过的实例"还是"裸实例"——那是运行时属性。改成约束**实现类的集合**：只要 `GuardedToolCallback` 是唯一实现，编排层手里的任何 `ToolCallback` 就必然是被包装过的。**教训：写架构约束前先问"这个性质静态可见吗"** |
 | **F2 的包范围把 REST 层圈了进去** | `oncall-config-admin` 的包名是 `com.oncall.config.admin`，不是独立顶层包。只写 `com.oncall.config..` 会把控制器一起算进"零依赖模块"，第一次跑红了 58 处。加 `resideOutsideOfPackages` 排除。**规则第一次跑就报出大量违规时，先怀疑范围写错，不是先怀疑代码** |
+| **审计日志只按毫秒时间戳排序** | 发起与驳回落在同一毫秒是正常操作，两条记录时间戳相同 ⇒ 顺序不确定 ⇒ `recent(1)` 返回哪条看运气。后果不只是测试随机红：**「先发起还是先被拒」是事后追责要回答的问题，必须有唯一答案**。修法是给条目加插入序号 `seq`，排序改为 `(atMillis, seq)`。**教训：凡是"给人看的有序列表"，都要问"排序键有并列时怎么办"** |
+| **同一个流程里混用两个时钟**（第二次踩） | `ToolPolicyGovernance` 持有可注入时钟用于测过期，而审计实现自己调 `System.currentTimeMillis()`。测试推进了一个，另一个不动。**规则：谁拥有流程，谁负责传时刻；被调用方不自己取时钟** |
 | **record 里声明了与零参方法同名的静态工厂**（第二次踩） | `record ReviewOutcome(verdict, message)` 里既有实例方法 `boolean allowed()`，又写了 `static ReviewOutcome allowed()` —— 同名同参数个数、只有返回类型不同，Java 直接编译不过（`method allowed() is already defined`）。`Approval` 里踩过一次同样的坑。**规则：record 的静态工厂一律用动词命名（`allow` / `granted` / `rejected`），永远不要用形容词或与组件同名的词。括号平衡自检抓不到，只有真编译能抓** |
 | **record 加了字段，漏改直接 `new` 的调用点** | `RuleContext` 把 `riskLevel` 插到第 4 位，测试里那个绕过工厂方法直接 `new` 的调用点没跟着改，编译失败。**括号平衡、括号配对这类自检抓不到参数个数错误——只有真编译能抓** |
 | **在文档里写"未验证风险清单"，而不是加个数据库容器** | V2–V6 写完后我列了四条"未经验证的风险"。CI 里加一个 `pgvector/pgvector:pg16` 的 service 容器实测，**四条全部证伪**，一次通过。风险清单只能让人知道有风险，容器能让人知道没有风险 |
