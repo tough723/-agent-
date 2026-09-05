@@ -198,7 +198,7 @@ oncall-ontology/                         ✅ 零外部依赖（纯 Java 17）
 └── src/test/java/...                    3 个测试类，59 个用例
 
 oncall-archtest/                         ✅ 无生产代码，只有测试
-├── ArchitectureRuleTest.java            F1–F4 + F9，7 个用例
+├── ArchitectureRuleTest.java            F1–F4 + F9，8 个用例
 └── fixture/UnguardedToolCallbackFixture.java   故意违规，用来证明 F9 会红
 ```
 

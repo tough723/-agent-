@@ -40,11 +40,26 @@ class ArchitectureRuleTest {
             "com.oncall.ontology"
     };
 
-    /** 必须保持零外部依赖的模块。已用 grep 核实当前只依赖 java./javax./com.oncall.。 */
+    /**
+     * 必须保持零外部依赖的包。
+     *
+     * <p><b>这里的排除项是踩过坑之后加的</b>：{@code oncall-config-admin} 的包名是
+     * {@code com.oncall.config.admin}，<b>不是</b>一个独立的顶层包。
+     * 只写 {@code com.oncall.config..} 会把 REST 控制器一起圈进来，
+     * 而它理所当然地依赖 Spring Web——第一次跑就红了 58 处。
+     *
+     * <p>这个错误有价值：它证明 F2 真的在检查东西。
+     * 一条规则第一次跑就报出大量违规，先怀疑范围写错，而不是先怀疑代码。
+     */
     private static final String[] ZERO_DEP_PACKAGES = {
             "com.oncall.domain..",
             "com.oncall.config..",
             "com.oncall.ontology.."
+    };
+
+    /** 上面的范围里必须排除的部分。 */
+    private static final String[] ZERO_DEP_EXCLUDED = {
+            "com.oncall.config.admin.."
     };
 
     /**
@@ -151,6 +166,7 @@ class ArchitectureRuleTest {
 
     private static final ArchRule F2_ZERO_DEP_MODULES =
             noClasses().that().resideInAnyPackage(ZERO_DEP_PACKAGES)
+                    .and().resideOutsideOfPackages(ZERO_DEP_EXCLUDED)
                     .should().dependOnClassesThat()
                     .resideInAnyPackage(FORBIDDEN_EXTERNAL_PACKAGES)
                     .because("domain / config / ontology 是生产代码零外部依赖的模块，"
@@ -161,6 +177,17 @@ class ArchitectureRuleTest {
     @DisplayName("F2 通过：domain / config / ontology 未引入外部库")
     void f2ZeroDependencyModulesStayClean() {
         assertRulePasses(F2_ZERO_DEP_MODULES, production);
+    }
+
+    @Test
+    @DisplayName("F2 非空转：JDBC 实现确实在扫描范围内（否则规则等于没写）")
+    void f2CoversTheJdbcImplementations() {
+        // 零依赖约束最有价值的地方就是 JDBC 实现——它们最容易为了省事引第三方连接池或 ORM。
+        // 如果这两个类不在扫描范围里，F2 通过了也说明不了任何事。
+        assertTrue(production.contain("com.oncall.config.store.JdbcConfigStore"),
+                "没扫到 JdbcConfigStore，F2 的通过是空转的");
+        assertTrue(production.contain("com.oncall.ontology.JdbcOntologyStore"),
+                "没扫到 JdbcOntologyStore，F2 的通过是空转的");
     }
 
     // ------------------------------------------------------------ F3 依赖方向
