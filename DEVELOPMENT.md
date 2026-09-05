@@ -152,6 +152,16 @@ oncall-agent/
 │           ├── JdbcConfigStore.java     配置覆盖值持久化（墓碑行 + 方言无关 upsert）
 │           └── JdbcConfigAuditLog.java  配置变更审计持久化
 │   └── src/test/java/...                5 个测试类（JDBC 用 H2 内存库跑真 SQL）
+├── oncall-config-admin/                 ✅ 配置治理的 REST 接入层（本轮新增）
+│   └── src/main/java/com/oncall/config/admin/
+│       ├── ConfigAdminController.java   读/写/双人复核/重载
+│       ├── Operator.java                操作人 + 三级角色（刻意没有超级管理员）
+│       ├── ConfigAccessPolicy.java      权限判定 + 高危键清单（硬编码，不可配置）
+│       ├── PendingChange.java           待复核单：带 TTL 与"期间被改过"检测
+│       ├── PendingChangeStore.java      端口 + InMemory 实现
+│       ├── ConfigItemView.java          前端视图 DTO（敏感值掩码）
+│       └── AdminApiException.java       统一异常 → HTTP 状态码
+│   └── src/test/java/...                3 个测试类（MockMvc standaloneSetup）
 └── oncall-tool-gateway/                 ✅ P0 安全核心
     └── src/main/java/com/oncall/toolgateway/
         ├── ToolPolicyEngine.java        默认拒绝 + 拒绝事件上报
@@ -269,8 +279,27 @@ JDBC 实现有三个不显眼但会出事的决定：
 测试用 **H2 内存库跑真 SQL**（`2.3.232`，test scope）。mock `Connection` 只能证明
 "我以为的 SQL 是我以为的 SQL"，证明不了语句真能执行——列名拼错、方言不兼容只有真库能抓到。
 
-**待做**：管理 REST 接口 + RBAC + 高危项二次确认 →
-把业务代码接到 `ConfigService` 并用 ArchUnit 禁止模块外出现 `@Value` →
+**已完成**：管理 REST 接口 + RBAC + 高危项双人复核（`oncall-config-admin` 模块）。
+
+这一层单独成模块，是为了不破坏 `oncall-config` 的"生产代码零外部依赖"——
+一旦在里面放 `@RestController`，这条约束就破了，而且破得毫无必要：
+HTTP 绑定本来就该是可替换的适配器。依赖方向是 admin → config，不反向。
+
+四个不显眼但会出事的决定：
+
+| 决定 | 不这么做会怎样 |
+|------|--------------|
+| BACKEND_ONLY 返回 **404 而不是 403** | 403 泄露"这个键存在但你不能碰"，攻击者可据此枚举出系统有哪些兜底开关 |
+| 高危键清单**硬编码，不做成配置项** | 若能配置，提权者可以先把该键移出高危清单再从容修改，双人复核被自己保护的机制绕过 |
+| 待复核单**有 15 分钟 TTL** | 隔三天再复核，复核人面对的是完全不同的系统状态，他的"同意"不再是对当前状态的判断 |
+| 复核前检查**该键期间是否被改过** | 否则复核人判断的依据已经失效，却照样能批准 |
+
+角色刻意只有三级且**没有超级管理员**：高危配置需要的是"另一个人也同意"，
+不是"某个人权限更大"——加一个超级角色只会让双人复核形同虚设。
+
+**待做**：把业务代码接到 `ConfigService` 并用 ArchUnit 禁止模块外出现 `@Value` →
+`X-Operator` 头必须由网关鉴权后写入并剥掉客户端自带的同名头（接入时必须核对）→
+`PendingChangeStore` 换数据库实现（多实例下 A 发起的变更要能被 B 复核）→
 Prompt 模板配置化（必须连带双人复核）。
 
 ### M2 — Flyway 建表（3 天）

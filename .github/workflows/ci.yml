@@ -63,8 +63,23 @@ jobs:
       - name: Build & test oncall-config (配置治理，纯 Java，零外部依赖)
         run: mvn -B -pl oncall-config -am test
 
+      - name: Build & test oncall-config-admin (REST 接入层，依赖 Spring Web)
+        run: mvn -B -pl oncall-config-admin -am test
+
       - name: Build & test oncall-tool-gateway (依赖 Spring AI)
         run: mvn -B -pl oncall-tool-gateway -am test
+
+      # 引入 Spring Boot 后，通用件（spring-core / jackson）的版本由 Boot BOM 决定。
+      # 这里把实际解析到的版本带出来，一旦与 Spring AI 的期望不符可以立刻看到，
+      # 而不是等到运行时 NoSuchMethodError。
+      - name: Record resolved Spring Framework / Jackson version
+        run: |
+          mvn -B -q dependency:tree -Dincludes=org.springframework:spring-core,com.fasterxml.jackson.core:jackson-databind \
+            -DoutputFile=/tmp/core-tree.txt -DappendOutput=true || true
+          grep -Eo "org.springframework:spring-core:jar:[0-9][^ :]*" /tmp/core-tree.txt 2>/dev/null \
+            | sort -u | head -3 | sed 's/^/::notice::CORE-DEP /' || true
+          grep -Eo "com.fasterxml.jackson.core:jackson-databind:jar:[0-9][^ :]*" /tmp/core-tree.txt 2>/dev/null \
+            | sort -u | head -3 | sed 's/^/::notice::JACKSON-DEP /' || true
 
       # 硬保险：surefire 2.x 遇到 JUnit 5 会静默跑 0 个测试并报成功。
       # 只有「测试数 > 0 且失败数 = 0」才算通过，不接受空跑。
