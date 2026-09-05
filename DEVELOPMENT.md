@@ -12,7 +12,7 @@
 ### CI 已经验证通过（不是"待你验证"）
 
 `.github/workflows/ci.yml` 在每次 push 时用 JDK 17 + Maven 3.9.16 真实编译并跑测试。
-**最近一次全绿**：run `33951132551` / commit `267f4b8` / conclusion `success`。
+**最近一次全绿**：run `33952866933` / conclusion `success`。
 
 | 步骤 | 结果 |
 |------|------|
@@ -20,10 +20,11 @@
 | Validate POM model (all modules) | ✅ |
 | Record resolved Spring AI version | ✅ |
 | Build & test `oncall-domain`（纯 Java，零外部依赖） | ✅ |
+| Build & test `oncall-config`（配置治理，纯 Java，零外部依赖） | ✅ |
 | Build & test `oncall-tool-gateway`（依赖 Spring AI） | ✅ |
-| Assert tests actually ran | ✅ `报告文件=5 测试总数=40 失败=0 错误=0 跳过=0` |
+| Assert tests actually ran | ✅ `报告文件=10 测试总数=104 失败=0 错误=0 跳过=0` |
 
-**测试数字对得上**：5 个报告文件对应 5 个测试类，40 个测试对应本地 40 个 `@Test`。
+**测试数字对得上**：10 个报告文件对应 10 个测试类，104 个测试对应本地 104 个 `@Test`。
 `GuardedToolCallback` 编译通过，意味着 `ToolCallback` / `ToolDefinition` /
 `ToolMetadata.builder()` / `ToolContext` 这套签名在 Spring AI **1.1.6** 上是对的——
 F1 那块最关键的装饰器代码不再是"对照文档推测"。
@@ -80,7 +81,7 @@ surefire **3.2.5** + compiler **3.13.0**，并显式声明 `junit-jupiter-engine
 
 ### 仍需你本地验证的部分
 
-CI 只覆盖到 `oncall-domain` + `oncall-tool-gateway` 两个模块。下面这些还**没有代码**，
+CI 只覆盖到 `oncall-domain` + `oncall-config` + `oncall-tool-gateway` 三个模块。下面这些还**没有代码**，
 自然也没被验证，不要当成已完成：
 
 | 位置 | 状态 |
@@ -131,6 +132,23 @@ oncall-agent/
 │           ├── ToolPolicy.java          策略 record，与代码解耦
 │           └── ToolDeniedException.java
 │   └── src/test/java/.../TicketStateMachineTest.java     8 个用例
+├── oncall-config/                       ✅ 配置治理（本轮新增，零外部依赖）
+│   └── src/main/java/com/oncall/config/
+│       ├── ConfigTier.java              三级：RUNTIME_HOT / REQUIRES_MIGRATION / BACKEND_ONLY
+│       ├── ConfigType.java              类型 + 时长/列表/枚举解析（严格布尔，拼错即拒）
+│       ├── ConfigSpec.java              单项声明：默认值/分级/边界/说明/迁移提示
+│       ├── ConfigRegistry.java          声明表 + 启动自检（坏声明直接启动失败）
+│       ├── ConfigValidator.java         四层校验，写入时拒绝而非读取时炸
+│       ├── ConfigStore.java             持久化端口
+│       ├── InMemoryConfigStore.java     内存实现（并发安全）
+│       ├── ConfigService.java           读取/变更/快照/前端视图
+│       ├── ConfigSnapshot.java          一次请求内配置一致 + revision 标注
+│       ├── ConfigChange.java            变更审计记录
+│       ├── ConfigAuditLog.java          审计端口 + InMemory 实现
+│       ├── OnCallConfigKeys.java        36 个配置键常量
+│       ├── OnCallConfigRegistry.java    36 项参数声明（逐条对应文档冻结清单）
+│       └── schema/ConfigSchemaExporter.java  前端 JSON schema 导出（手写，零依赖）
+│   └── src/test/java/...                4 个测试类，64 个用例
 └── oncall-tool-gateway/                 ✅ P0 安全核心
     └── src/main/java/com/oncall/toolgateway/
         ├── ToolPolicyEngine.java        默认拒绝 + 拒绝事件上报
@@ -143,7 +161,7 @@ oncall-agent/
     └── src/test/java/.../ToolPolicyEngineTest.java       10 个用例
 ```
 
-**这两个模块是纯逻辑，没有 Spring 上下文**——`oncall-domain` 完全零依赖，`oncall-tool-gateway` 只有 `GuardedToolCallback` 一个类碰 Spring AI。这样即使 Spring AI 坐标要调，90% 的代码不受影响。
+**这三个模块都是纯逻辑，没有 Spring 上下文**——`oncall-domain` 与 `oncall-config` 完全零依赖，`oncall-tool-gateway` 只有 `GuardedToolCallback` 一个类碰 Spring AI。这样即使 Spring AI 坐标要调，90% 的代码不受影响。
 
 ---
 
@@ -183,12 +201,58 @@ oncall-agent/
 - [ ] kill switch 切 `READ_ONLY` → 写工具立即被拒（无需重启）
 - [ ] 同一幂等键重复调用 → 只执行一次
 
+### M1.5 — 配置治理与前端可配置化（本轮新增，✅ 已完成）
+
+对应架构约束：**能做成前端可交互配置的一律不得硬编码在后端，兜底机制除外。**
+设计说明见 `配置外置与前端可配置设计.md`。
+
+核心机制：
+
+| 类 | 作用 |
+|----|------|
+| `ConfigTier` | 三级分类：`RUNTIME_HOT`（前端可改热生效）/ `REQUIRES_MIGRATION`（可改但需重建索引）/ `BACKEND_ONLY`（前端不展示不可改） |
+| `ConfigSpec` | 一份声明同时服务三个消费方：前端渲染、后端校验、评审审计 |
+| `ConfigRegistry` | **启动自检**——重复键、缺迁移提示、默认值不可解析一律启动失败 |
+| `ConfigValidator` | 写入时四层校验；`BACKEND_ONLY` 从前端写入时**不确认该键是否存在** |
+| `ConfigSnapshot` | 一次请求内配置一致，并标明基于哪一版 revision |
+| `ConfigSchemaExporter` | 导出前端可直接渲染的 JSON schema，后端加配置项前端自动多一个表单项 |
+
+**36 项参数**逐条对应 `质量与可靠性设计.md §3.1` 的 19 项冻结参数 +
+`开工前决策冻结与返工风险评估.md §5` 补充的 6 项，并用测试锁住默认值一致性。
+
+两个上游硬限制被**编码成校验边界**，前端物理上填不出会导致故障的值：
+
+| 参数 | 上界 | 依据 |
+|------|-----|------|
+| `vector.dimension` | 2000 | pgvector HNSW 索引上限；上游模型提供 2048 维，选它会建索引失败 |
+| `vector.embedding-batch-size` | 10 | 上游 embedding API 单批上限；框架默认 10000 会在灌库阶段失败 |
+
+**留在 `BACKEND_ONLY` 的三类**（理由见设计文档 §2）：兜底机制配置（约束的例外）、
+DDL 绑定项（向量维度/距离函数/索引类型——改了是数据迁移不是配置变更）、凭据。
+
+测试 64 个，其中三类守的不是业务逻辑而是**架构约束本身**：
+兜底项必须 `BACKEND_ONLY`、热改数值项必须有边界、后端专属键名不得出现在前端 schema 里。
+另有跨模块的 `ConfigEnumAlignmentTest`（在 `oncall-tool-gateway`），
+守配置里的字符串取值与 `AutonomyLevel` / `RunMode` 枚举逐一对应——这类错位没有编译期保护。
+
+**待做**：`JdbcConfigStore`（否则配置重启即丢）→ 管理 REST 接口 + RBAC →
+把业务代码接到 `ConfigService` 并用 ArchUnit 禁止模块外出现 `@Value` →
+Prompt 模板配置化（必须连带双人复核）。
+
 ### M2 — Flyway 建表（3 天）
 
 7 张表，DDL 已在 `修复方案.md` 写好：
 `agent_run` / `agent_step` / `tool_audit_log` / `approval_record` / `alert_group` / `alert_event` / `kb_document_version`
 
 **关键点**：`agent_step.idempotency_key` 必须 UNIQUE——这是幂等的物理保证，不能只靠应用层判断。
+
+**本轮追加 3 张**（配置治理与向量库带来的）：
+
+| 表 | 用途 | 关键点 |
+|----|------|-------|
+| `app_config` | 配置覆盖值（`JdbcConfigStore` 的落地） | 只存**被改过**的键，默认值留在代码声明里，这样「哪些参数被改离基线」一目了然 |
+| `config_audit_log` | 配置变更审计 | 与 `tool_audit_log` 同级保留期，建议 180 天 |
+| `kb_chunk_vector` | 向量表 | DDL 见 `开工前决策冻结与返工风险评估.md §1.3`。`id` **不要**用 `DEFAULT uuid_generate_v4()`——chunk ID 必须确定性生成，否则 chunk 级引用与增量索引都做不了 |
 
 ### M3 — Plan-Execute-Replan 编排（2 周）
 
