@@ -57,7 +57,7 @@ jobs:
           grep -Eo "org.springframework.ai:[a-z-]+:jar:[0-9][^ :]*" /tmp/spring-ai-tree.txt 2>/dev/null \
             | sort -u | head -8 | sed 's/^/::notice::AI-DEP /' || true
 
-      # 四个模块统一走这个模式：失败时把 [ERROR] 行与失败测试作为 annotation 发出。
+      # 六个模块统一走这个模式：失败时把 [ERROR] 行与失败测试作为 annotation 发出。
       # 原因是 CI 的 job 日志在开发沙箱里取不到（下载接口 SSL 失败），
       # check-run annotation 是唯一可读的输出通道——没有它就等于闭着眼睛改。
       - name: Build & test oncall-domain (纯 Java，零外部依赖)
@@ -71,6 +71,23 @@ jobs:
 
       - name: Build & test oncall-tool-gateway (依赖 Spring AI)
         run: ./.github/mvn-test.sh oncall-tool-gateway
+
+      - name: Build & test oncall-ontology (轻量本体，纯 Java，零外部依赖)
+        run: ./.github/mvn-test.sh oncall-ontology
+
+      # 必须排在最后：F9 要能看到网关以外的代码，它依赖全部模块。
+      # 这个模块没有生产代码，只有架构约束测试。
+      - name: Build & test oncall-archtest (架构约束 F1-F4、F9)
+        run: ./.github/mvn-test.sh oncall-archtest
+
+      # ArchUnit 是新引入的依赖，把解析到的版本带出来，
+      # 坐标或版本写错时这里是第一个能看到证据的地方。
+      - name: Record resolved ArchUnit version
+        run: |
+          mvn -B -q dependency:tree -Dincludes=com.tngtech.archunit \
+            -DoutputFile=/tmp/archunit-tree.txt -DappendOutput=true || true
+          grep -Eo "com.tngtech.archunit:[a-z0-9-]+:jar:[0-9][^ :]*" /tmp/archunit-tree.txt 2>/dev/null \
+            | sort -u | head -4 | sed 's/^/::notice::ARCHUNIT-DEP /' || true
 
       # 引入 Spring Boot 后，通用件（spring-core / jackson）的版本由 Boot BOM 决定。
       # 这里把实际解析到的版本带出来，一旦与 Spring AI 的期望不符可以立刻看到，
@@ -122,3 +139,76 @@ jobs:
           name: surefire-reports
           path: '**/surefire-reports/*.txt'
           if-no-files-found: error
+
+  # -------------------------------------------------------------------
+  # DDL 验证：db/migration 里的脚本必须在真实 PostgreSQL 上跑得通
+  #
+  # 为什么必须单独一个 job：构建 job 的测试作用域只有 H2，
+  # 而 V3/V4 的 PARTITION BY RANGE 与 V5 的 vector(1024)+HNSW 是 PostgreSQL 专有的，
+  # H2 根本不支持。也就是说 V2~V6 的 13 张表在加这个 job 之前
+  # **从未被任何数据库执行过一次**——语法错、分区顺序错、COMMENT ON 的列名拼错，
+  # 全都要等到 M2 第一次启动才炸。schema 属于「改不了要重来」的那一类，
+  # 晚发现的代价是非线性的。
+  #
+  # ⚠️ 第一轮 continue-on-error: true：脚本还没被验证过，很可能有错。
+  #    先把错误暴露成 annotation 看清楚，修完之后**必须把这个开关去掉**，
+  #    让它变成硬失败。留着 continue-on-error 就等于没有这道防线。
+  # -------------------------------------------------------------------
+  ddl:
+    name: DDL on PostgreSQL 16 + pgvector
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: oncall
+          POSTGRES_DB: oncall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run V1..V6 against a real database
+        env:
+          PGPASSWORD: oncall
+        run: |
+          fail=0
+          for f in $(ls db/migration/V*.sql | sort -V); do
+            echo "===== $f ====="
+            if psql -h localhost -U postgres -d oncall -v ON_ERROR_STOP=1 -f "$f"; then
+              echo "::notice::DDL-OK $f"
+            else
+              echo "::error::DDL-FAIL $f 执行失败"
+              fail=1
+            fi
+          done
+          echo "===== 建表结果 ====="
+          psql -h localhost -U postgres -d oncall -c \
+            "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name"
+          n=$(psql -h localhost -U postgres -d oncall -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+          echo "::notice::DDL-表数 $n"
+          echo "===== 约束核查（幂等与不能自审） ====="
+          psql -h localhost -U postgres -d oncall -c \
+            "SELECT conname, contype FROM pg_constraint WHERE conname IN ('uq_agent_step_idem','chk_approval_not_self','chk_onto_criticality') ORDER BY conname"
+          exit $fail
+
+      - name: Verify idempotency re-run (脚本必须可重复执行)
+        env:
+          PGPASSWORD: oncall
+        run: |
+          for f in $(ls db/migration/V*.sql | sort -V); do
+            psql -h localhost -U postgres -d oncall -v ON_ERROR_STOP=1 -f "$f" || {
+              echo "::error::DDL-RERUN-FAIL $f 第二次执行失败（脚本不是幂等的）"
+              exit 1
+            }
+          done
+          echo "::notice::DDL-幂等 全部脚本可重复执行"
