@@ -13,9 +13,8 @@
 
 `.github/workflows/ci.yml` 在每次 push 时用 JDK 17 + Maven 3.9.16 真实编译并跑测试，
 另有一个独立的 job 用真实 PostgreSQL 16 + pgvector 跑 DDL。
-**最近一次全绿**：run `33985198351` / conclusion `success`（两个 job 都是），
-commit `a5553e5`。下表是那次实测的数字（读自 check-run annotations，不是预测值）。
-本轮（§1.6 双人复核核心下沉）的预期数字见该节末尾——CI 跑完前不写成"已验证"。
+**最近一次全绿**：run `33985929578` / conclusion `success`（两个 job 都是），
+commit `de5ae41`。下表是那次实测的数字（读自 check-run annotations，不是预测值）。
 
 | 步骤 | 结果 |
 |------|------|
@@ -28,12 +27,12 @@ commit `a5553e5`。下表是那次实测的数字（读自 check-run annotations
 | Build & test `oncall-tool-gateway`（依赖 Spring AI） | ✅ |
 | Build & test `oncall-ontology`（轻量本体，纯 Java，零外部依赖） | ✅ |
 | Build & test `oncall-archtest`（架构约束 F1–F4、F9） | ✅ `archunit:1.4.2` |
-| Assert tests actually ran | ✅ `报告文件=22 测试总数=304 失败=0 错误=0 跳过=0` |
+| Assert tests actually ran | ✅ `报告文件=23 测试总数=323 失败=0 错误=0 跳过=0` |
 | **DDL on PostgreSQL 16 + pgvector** | ✅ V1–V7 各 7/7，**重复执行也 7/7**，表数 **19** |
 
-**测试数字对得上**：22 个报告文件对应 22 个测试类，304 =
-domain 16 + config 82 + config-admin 35 + tool-gateway 104 + ontology 59 + archtest 8。
-其中 tool-gateway 的 104 = 上一轮 80 + 幂等账本轮 24。
+**测试数字对得上**：23 个报告文件对应 23 个测试类，323 =
+domain 35 + config 82 + config-admin 35 + tool-gateway 104 + ontology 59 + archtest 8。
+其中 domain 的 35 = 上一轮 16 + 双人复核核心 19（见 §1.6）。
 
 **DDL job 的断言**：`information_schema` 表数必须恰好命中期望值
 （本轮起是 19 = 16 张逻辑表 + 3 个 DEFAULT 分区），`uq_agent_step_idem`、
@@ -474,13 +473,109 @@ oncall-config-admin
 
 #### 本轮改动的预期数字（CI 跑完前不写成"已验证"）
 
-| 指标 | `a5553e5` 实测 | 本轮预测 | 依据 |
+| 指标 | `a5553e5` 实测 | 本轮预测 | **run `33985929578` 实测** |
+|------|---------------|---------|-------------------------------|
+| 测试类 / 报告文件 | 22 | 23 | ✅ **23** |
+| 测试用例 | 304 | 323 | ✅ **323**（失败 0 / 错误 0 / 跳过 0） |
+| `oncall-domain` | 11 类 / 16 用例 | 16 类 / 35 用例 | 本地清点 16 / 35（CI 不分模块报数） |
+| `oncall-config-admin` | 12 类 / 35 用例 | 11 类 / 35 用例 | 本地清点 11 / 35，用例数不变 |
+| 生产类合计 | 78 | 82 | 本地清点 82（CI 不统计此项） |
+
+> 预测与实测逐项吻合。中间红过一次，是**我踩了同一个坑第二次**：
+> run `33985838506` 编译失败，`ReviewOutcome` 里既有实例方法 `boolean allowed()`
+> 又写了 `static ReviewOutcome allowed()` —— 同名同参数个数、只有返回类型不同，
+> Java 不允许。`Approval` 里踩过一次（那次是与 record 组件同名）。
+> 已在 [DEVLONG.md](DEVLONG.md) §6 记成一般规则：**record 的静态工厂一律用动词命名**。
+
+### 1.7 工具白名单变更治理（轨道 A 第二步）
+
+```
+oncall-tool-gateway/src/main/java/com/oncall/toolgateway/governance/
+├── PolicyRiskDelta.java                  风险方向判定：这次变更是放宽还是收紧
+├── ToolPolicyChange.java                 一次拟议变更（GRANT / UPDATE / REVOKE）
+├── ToolPolicyChangeTicket.java           待复核单 + 策略签名
+├── ToolPolicyChangeTicketStore.java      端口（多实例下 A 发起的单子 B 必须能复核）
+├── InMemoryToolPolicyChangeTicketStore.java
+├── ToolPolicyChangeAudit.java            端口：谁在什么时候放行/收紧了什么
+├── InMemoryToolPolicyChangeAudit.java
+├── GovernanceException.java              携带 ReviewVerdict，供接入层映射状态码
+└── ToolPolicyGovernance.java             propose / confirm / reject / preview
+
+oncall-tool-gateway/src/test/java/.../governance/
+├── PolicyRiskDeltaTest.java              17 个用例
+└── ToolPolicyGovernanceTest.java         24 个用例
+```
+
+#### 堵的洞
+
+`ToolPolicy` 是整个安全模型的事实来源——**加一条 MCP 工具策略等于放行一个远端工具**。
+但在此之前加策略就是调一次 `ToolPolicyEngine.register()`：
+没有第二人复核，也没有"谁在什么时候放行了什么"的可查记录。
+配置治理那一套只覆盖 `OnCallConfigRegistry`。
+
+这相当于给「连接」（`mcp.allowed-servers`）装了锁，
+而真正承重的「授权」是敞开的。
+
+#### 核心判据：治理要求跟着风险方向走，不是跟着"有没有改动"走
+
+| 方向 | 是否需要双人 | 为什么 |
+|------|-------------|--------|
+| **放宽**（让 AI 能做更多） | ✅ 必须 | 加一条策略就是放行一个工具 |
+| **收紧**（让 AI 能做更少） | ❌ 不需要 | 默认拒绝之下，撤掉一条策略让系统**严格变安全** |
+
+这条不对称是刻意的：**如果撤掉一个危险工具也要凑齐两个人，
+结果就是那个危险工具继续留在白名单里**——
+把安全改进卡在双人流程后面，恰好保护了它本该消除的风险。
+
+算「放宽」的五个维度（**任一**放宽即整体放宽，刻意不打分）：
+`risk` 下调 · 取消 `requiresApproval` · 取消 `requiresDualApproval` ·
+去掉 `argsJsonSchema` · `approvalTimeout` 变长。
+
+不打分是因为打分会让一处收紧去抵一处放宽，
+而「关掉审批」和「把风险从 HIGH 降到 READ_ONLY」不是可以互相抵消的东西。
+
+**两个刻意的例外**：
+- **新增工具无条件算放宽，包括 `READ_ONLY`**。加进白名单就等于允许模型调用它，
+  而「只读」这个标签本身正是发起人的断言——复核人要做的事就是核对这个断言。
+  数据泄露不需要写权限。
+- **`source` 变化（LOCAL ↔ MCP）不算宽窄**：换的是信任边界，不是权限大小。
+  但它会记进理由里，复核人需要知道。
+
+#### 共享什么、不共享什么
+
+| | 内容 |
+|---|---|
+| **共享** | 判定规则 `TwoPersonReview`（领域层，只有一份，见 §1.6） |
+| **不共享** | 单据形状：配置侧载荷是两个 String，工具侧是一个 `ToolPolicy` 加变更类型 |
+| **不共享** | 哪些变更要复核：配置侧是硬编码的 5 个键，工具侧是 `PolicyRiskDelta` 算出来的方向 |
+
+**规则分叉才会出事故，单据形状分叉不会**——所以只共享规则。
+硬把两边塞进同一个记录，只会让两边都长出一堆「这个字段在我这儿没意义」。
+
+#### ⚠️ 这一轮**没有**堵上的一半（明确登记，不假装已封死）
+
+`ToolPolicyEngine.register()` / `revoke()` **仍然是 `public`**。
+也就是说这个治理层是「应当走的路」，还不是「唯一能走的路」——
+拿到引擎引用的代码仍然可以直接改白名单。
+
+要真正封死得把这两个方法降为包级可见，而 `McpToolRegistrarTest` 在
+`com.oncall.toolgateway.mcp` 子包里用了它们（13 处），需要一并调整。
+这是独立一轮的事，本轮不夹带。
+`ToolPolicyGovernanceTest` 里的 `staleTicketIsRejectedAndRemoved`
+甚至**直接利用了**这个缺口来构造"期间被别人改过"的场景。
+
+另外**还没有 REST 接入点**：这一层是领域服务，
+`GovernanceException` 携带 `ReviewVerdict` 就是为了让接入层能正确映射状态码，
+但接入层本身属于 A3。
+
+#### 本轮改动的预期数字（CI 跑完前不写成"已验证"）
+
+| 指标 | `de5ae41` 实测 | 本轮预测 | 依据 |
 |------|---------------|---------|------|
-| 测试类 / 报告文件 | 22 | **23** | 新增 `TwoPersonReviewTest` |
-| 测试用例 | 304 | **323** | +19，逐文件 `@Test` 清点 |
-| `oncall-domain` | 11 类 / 16 用例 | **16 类 / 35 用例** | +5 类（Operator 移入 + 4 个新类）/+19 用例 |
-| `oncall-config-admin` | 12 类 / 35 用例 | **11 类 / 35 用例** | Operator 移出，用例数不变 |
-| 生产类合计 | 78 | **82** | +5 −1 |
+| 测试类 / 报告文件 | 23 | **25** | 新增 `PolicyRiskDeltaTest`、`ToolPolicyGovernanceTest` |
+| 测试用例 | 323 | **364** | +17 +24 = +41，逐文件 `@Test` 清点 |
+| `oncall-tool-gateway` | 20 类 / 104 用例 | **29 类 / 145 用例** | +9 类 / +41 用例 |
+| 生产类合计 | 82 | **91** | +9 |
 
 ---
 
