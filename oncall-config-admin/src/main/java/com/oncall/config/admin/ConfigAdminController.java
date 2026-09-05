@@ -33,6 +33,12 @@ import java.util.function.LongSupplier;
  * 后者会与 {@code /views}、{@code /schema} 这类字面量路径产生模板匹配歧义。
  * Spring 虽然规定字面量优先，但依赖这个优先级会让读代码的人每次都要想一遍。
  *
+ * <p><b>所有 {@code @PathVariable} / {@code @RequestParam} 都显式写了名字</b>。
+ * Spring MVC 默认靠反射读方法参数名，那需要编译时开 {@code -parameters}
+ * （父 POM 已开，见 maven-compiler-plugin 的说明）。显式命名是第二道保险：
+ * 万一哪天构建方式变了、标记丢了，这里不会退化成运行时 500。
+ * 这个坑的表现很坏——编译通过、容器启动正常，第一个带路径参数的请求才炸。
+ *
  * <p><b>身份从哪来</b>：{@code X-Operator} / {@code X-Operator-Role} 两个请求头
  * 必须由网关在鉴权后写入，并且<b>网关要剥掉客户端自带的这两个头</b>。
  * 否则前端自己填一个 {@code ADMIN} 就提权了。这一层无法自证，
@@ -103,7 +109,7 @@ public class ConfigAdminController {
     }
 
     @GetMapping("/items/{key}")
-    public ConfigItemView item(@PathVariable String key) {
+    public ConfigItemView item(@PathVariable("key") String key) {
         ConfigSpec spec = visibleSpecOr404(key);
         ConfigView view = new ConfigView(spec, service.get(key),
                 !service.get(key).equals(spec.defaultValue()));
@@ -111,14 +117,14 @@ public class ConfigAdminController {
     }
 
     @GetMapping("/items/{key}/history")
-    public List<ConfigChange> history(@PathVariable String key) {
+    public List<ConfigChange> history(@PathVariable("key") String key) {
         // 先确认这个键对调用方可见，否则等于通过历史接口枚举后端专属键
         visibleSpecOr404(key);
         return auditLog.history(key);
     }
 
     @GetMapping("/changes/recent")
-    public List<ConfigChange> recent(@RequestParam(defaultValue = "20") int limit) {
+    public List<ConfigChange> recent(@RequestParam(value = "limit", defaultValue = "20") int limit) {
         if (limit <= 0 || limit > 500) {
             throw AdminApiException.badRequest("limit 必须在 1 到 500 之间");
         }
@@ -138,7 +144,7 @@ public class ConfigAdminController {
      * </ul>
      */
     @PutMapping("/items/{key}")
-    public ResponseEntity<ConfigWriteResponse> write(@PathVariable String key,
+    public ResponseEntity<ConfigWriteResponse> write(@PathVariable("key") String key,
                                                      @RequestBody ConfigWriteRequest body,
                                                      @RequestHeader(name = HEADER_OPERATOR, required = false) String principal,
                                                      @RequestHeader(name = HEADER_ROLE, required = false) String role) {
@@ -180,8 +186,8 @@ public class ConfigAdminController {
 
     /** 恢复默认值。理由走查询参数——DELETE 带请求体在很多代理上会被丢弃。 */
     @DeleteMapping("/items/{key}")
-    public ResponseEntity<ConfigWriteResponse> reset(@PathVariable String key,
-                                                     @RequestParam String reason,
+    public ResponseEntity<ConfigWriteResponse> reset(@PathVariable("key") String key,
+                                                     @RequestParam("reason") String reason,
                                                      @RequestHeader(name = HEADER_OPERATOR, required = false) String principal,
                                                      @RequestHeader(name = HEADER_ROLE, required = false) String role) {
         return write(key, new ConfigWriteRequest(null, reason), principal, role);
@@ -200,8 +206,8 @@ public class ConfigAdminController {
      * </ol>
      */
     @PostMapping("/pending/{id}/confirm")
-    public ConfigWriteResponse confirm(@PathVariable String id,
-                                       @RequestParam(required = false) String reason,
+    public ConfigWriteResponse confirm(@PathVariable("id") String id,
+                                       @RequestParam(value = "reason", required = false) String reason,
                                        @RequestHeader(name = HEADER_OPERATOR, required = false) String principal,
                                        @RequestHeader(name = HEADER_ROLE, required = false) String role) {
         Operator operator = requireAuthenticated(principal, role);
@@ -231,8 +237,8 @@ public class ConfigAdminController {
 
     /** 驳回一个待复核变更。发起人自己也可以驳回。 */
     @PostMapping("/pending/{id}/reject")
-    public ResponseEntity<Void> reject(@PathVariable String id,
-                                       @RequestParam(required = false) String reason,
+    public ResponseEntity<Void> reject(@PathVariable("id") String id,
+                                       @RequestParam(value = "reason", required = false) String reason,
                                        @RequestHeader(name = HEADER_OPERATOR, required = false) String principal,
                                        @RequestHeader(name = HEADER_ROLE, required = false) String role) {
         Operator operator = requireAuthenticated(principal, role);

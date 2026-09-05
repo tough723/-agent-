@@ -65,6 +65,18 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-compiler-plugin</artifactId>
           <version>3.13.0</version>
+          <configuration>
+            <!--
+              必须开。Spring MVC 靠反射读取方法参数名来绑定 @PathVariable /
+              @RequestParam；没有这个标记，运行时会抛
+              "Name for argument of type [java.lang.String] not specified"。
+
+              spring-boot-maven-plugin 默认会加这个标记，但本项目用的是裸
+              maven-compiler-plugin（库模块不需要 Boot 的打包插件），所以要显式声明。
+              这个坑的表现很坏：编译通过、容器启动正常，第一个带路径参数的请求才炸。
+            -->
+            <parameters>true</parameters>
+          </configuration>
         </plugin>
       </plugins>
     </pluginManagement>
