@@ -113,7 +113,8 @@ public class ToolPolicyGovernance {
         Objects.requireNonNull(change, "change");
         Objects.requireNonNull(requester, "requester");
         if (requester.role() == Operator.Role.VIEWER) {
-            throw GovernanceException.badRequest("VIEWER 不能发起工具策略变更");
+            // 不是"请求写错了"，而是"这个角色没这个权限"，所以是 forbidden 而不是 badRequest
+            throw GovernanceException.forbidden("VIEWER 不能发起工具策略变更");
         }
 
         ToolPolicy current = engine.find(change.toolName()).orElse(null);
@@ -185,7 +186,7 @@ public class ToolPolicyGovernance {
         ToolPolicyChangeTicket ticket = requireTicket(ticketId);
         boolean isAdmin = operator.role() == Operator.Role.ADMIN;
         if (!isAdmin && !ticket.requester().equals(operator.principal())) {
-            throw GovernanceException.badRequest("只有复核人或发起人可以驳回");
+            throw GovernanceException.forbidden("只有复核人或发起人可以驳回");
         }
         tickets.remove(ticketId);
         audit.recordRejected(ticket, operator.principal(),

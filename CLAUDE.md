@@ -85,6 +85,8 @@ ls *.md                                            # 确认文档集完整
 | `oncall-tool-gateway/.../GuardedToolCallback.java` | **基石**：七道关卡 |
 | `oncall-config/.../OnCallConfigRegistry.java` | 41 项配置的唯一声明处 |
 | `oncall-config-admin/.../ConfigAdminController.java` | 配置 REST + 双人复核 |
+| `oncall-tool-admin/.../ToolPolicyAdminController.java` | 工具白名单 REST + 双人复核 |
+| `oncall-tool-gateway/.../ToolPolicyGovernance.java` | **唯一**有权改白名单的生产类 |
 | `db/migration/V1__config_governance.sql` | 已落地的 2 张表 |
 | `.github/mvn-test.sh` | CI 失败诊断（annotation 通道） |
 | `.github/workflows/ci.yml` | 模块列表是**硬编码**的，加模块要改这里 |

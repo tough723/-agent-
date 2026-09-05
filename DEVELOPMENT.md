@@ -662,14 +662,98 @@ oncall-tool-gateway/src/test/java/com/oncall/toolgateway/
 这**不是测试走后门而是必须能模拟**：`STALE` 那道检查防的正是"绕过治理的直接改动"，
 只能通过治理路径构造场景的话，就测不到它防的东西。
 
+#### 本轮改动的数字（`891a418`，run `33987482692` 已实测）
+
+| 指标 | `a015924` 实测 | 预测 | **实测** |
+|------|---------------|------|---------|
+| 测试类 / 报告文件 | 25 | 26 | **26** ✅ |
+| 测试用例 | 365 | 371 | **371** ✅ |
+| `oncall-tool-gateway` | 29 类 / 146 用例 | 29 类 / 152 用例 | **152** ✅ |
+| 生产类合计 | 91 | 91 | **91** ✅ |
+
+失败 0、错误 0、跳过 0。四个数字全部命中预测。
+
+---
+
+### 1.9 轨道 A3：工具白名单治理的 REST 接入层（`oncall-tool-admin`）
+
+**这是新增模块，不是往 `oncall-config-admin` 里加一个 Controller。**
+理由是两条硬约束，都不是偏好问题：
+
+1. **ArchUnit F3 会当场判红。** F3 禁止 `com.oncall.config..` 依赖
+   `com.oncall.toolgateway..`。`oncall-config-admin` 的包名是
+   `com.oncall.config.admin`，而 **F3 刻意没有像 F2 那样排除 `.admin..`**
+   （F2 排的是"零外部依赖"，`.admin` 理所当然要用 Spring Web；
+   F3 排的是"依赖方向"，`.admin` 没有任何理由向上依赖）。
+   把控制器塞进去，第一次跑 archtest 就红。
+2. **`oncall-tool-gateway` 刻意不引 Spring Web。** 它只依赖 Spring AI 与
+   `oncall-domain`，这样内核可以脱离 HTTP 单独测试。放一个 `@RestController`
+   进去就破了这条约束，而且破得毫无必要——HTTP 绑定本来就该是可替换的适配器。
+
+依赖方向：`tool-admin -> tool-gateway -> domain`，不反向。
+
+#### 8 个类，其中没有一行业务判定
+
+| 类 | 职责 |
+|----|------|
+| `ToolPolicyAdminController` | 6 个端点：列白名单、列未决单、查审计、预演、发起、复核/驳回 |
+| `ToolPolicyChangeRequest` | 请求体 → `ToolPolicyChange`，含枚举解析与前缀一致性校验 |
+| `ToolPolicyView` / `ToolPolicyTicketView` / `ToolPolicyWriteResponse` | 出参视图 |
+| `ToolAdminApiException` / `ToolAdminApiError` / `ToolAdminExceptionHandler` | 错误模型与映射 |
+
+**判定全部在治理层与领域层**，这一层只做：解身份、解请求体、调用、映射。
+映射错了是界面问题，判定错了是安全问题——两者的修法完全不同。
+
+#### 四个决策及其理由
+
+**① 请求体用 `approvalTimeoutSeconds`，不用 `Duration`。**
+`Duration` 的 JSON 形态取决于有没有注册 `jackson-datatype-jsr310`：
+注册了是 `"PT15M"`，没注册是数字。让前端依赖这种装配差异是不该的——
+"少注册一个模块"会让同一个请求体在两个环境里表现不同。
+
+**② 不复用 `config-admin` 的 `AdminApiException` / `ApiError`。**
+两边各带一个 `@RestControllerAdvice`，共用类型会在编译期把两个适配器绑死，
+而它们的错误码是分开演进的。这条约束由新的 ArchUnit **F10** 守着。
+
+**③ 枚举用字符串接收并显式解析。**
+直接反序列化枚举的话，非法值会得到 Jackson 的内部消息，对操作者毫无意义。
+
+**④ `source` 与工具名前缀必须一致，不一致直接 400。**
+`mcp:` 前缀是**安全边界**而不是命名习惯：允许 LOCAL 策略叫 `mcp:x:y`，
+等于用一条本地策略给远端工具背书；允许 MCP 策略不带前缀，
+则纳管结果对不上模型看到的名字，白名单永远匹配不上——
+故障现象是"工具不见了"而不是报错。
+
+#### 四种复核拒绝 → 四个不同的状态码
+
+`GovernanceException` 从 A2 起就携带 `ReviewVerdict`，A3 把它用掉了：
+
+| 判定 | 状态码 | 机器码 | 前端该做什么 |
+|------|--------|--------|-------------|
+| `EXPIRED` | 410 | `EXPIRED` | 重新发起 |
+| `NOT_AUTHORIZED` | 403 | `NOT_AUTHORIZED` | 换人 |
+| `SELF_APPROVAL` | 409 | `SELF_APPROVAL` | 换人 |
+| `STALE` | 409 | `STALE` | 重新发起 |
+
+合成一个 400 就会在界面上变成同一句"操作失败"，
+而"换人"和"重新发起"是两件完全不同的事。
+
+#### 顺带补的两处
+
+- **`ToolPolicyEngine.all()`**：管理员必须能看到"现在到底放行了哪些工具"，
+  否则双人复核就是闭着眼睛签字。返回**按工具名排序的不可变副本**——
+  `ConcurrentHashMap` 的迭代顺序不保证，顺序抖动看起来就像白名单自己变了。
+- **ArchUnit F10**（2 个用例）：`tooladmin` 不得依赖 `config..`；
+  `toolgateway` 不得依赖 `tooladmin..`。带非空转断言。
+
 #### 本轮改动的预期数字（CI 跑完前不写成"已验证"）
 
-| 指标 | `a015924` 实测 | 本轮预测 | 依据 |
+| 指标 | `891a418` 实测 | 本轮预测 | 依据 |
 |------|---------------|---------|------|
-| 测试类 / 报告文件 | 25 | **26** | 新增 `ToolPolicyEngineVisibilityTest` |
-| 测试用例 | 365 | **371** | +6，逐文件 `@Test` 清点 |
-| `oncall-tool-gateway` | 29 类 / 146 用例 | **29 类 / 152 用例** | 类数不变（移动不新增），+6 用例 |
-| 生产类合计 | 91 | **91** | 只移动，不新增 |
+| 测试类 / 报告文件 | 26 | **27** | 新增 `ToolPolicyAdminControllerTest` |
+| 测试用例 | 371 | **398** | +25（tool-admin）+2（F10 两个用例），逐文件 `@Test` 清点 |
+| `oncall-archtest` | 8 用例 | **10 用例** | +F10 规则 +非空转断言 |
+| 生产类合计 | 91 | **99** | +8（tool-admin 全新模块） |
 
 ---
 

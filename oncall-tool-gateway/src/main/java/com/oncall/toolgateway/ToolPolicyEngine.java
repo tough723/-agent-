@@ -5,6 +5,8 @@ import com.oncall.domain.tool.ToolPolicy;
 import com.oncall.domain.tool.ToolSource;
 
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -88,6 +90,26 @@ public class ToolPolicyEngine {
 
     public int size() {
         return allowList.size();
+    }
+
+    /**
+     * 当前白名单的全部内容，<b>按工具名排序</b>。
+     *
+     * <p>给治理界面用：管理员必须能看到"现在到底放行了哪些工具"，
+     * 否则双人复核就变成了闭着眼睛签字。
+     *
+     * <p>显式排序而不是直接返回 {@code values()}：
+     * {@code ConcurrentHashMap} 的迭代顺序不保证，而这份列表会进界面。
+     * 顺序抖动看起来就像"白名单自己变了"——在一个以白名单为事实来源的系统里，
+     * 那是最坏的误导。
+     *
+     * <p>返回不可变副本：把内部 map 的视图交出去，等于把包级可见的
+     * {@link #register} 绕过了一半。
+     */
+    public List<ToolPolicy> all() {
+        return allowList.values().stream()
+                .sorted(Comparator.comparing(ToolPolicy::toolName))
+                .toList();
     }
 
     /**

@@ -46,6 +46,13 @@
     <module>oncall-config-admin</module>
     <module>oncall-tool-gateway</module>
     <!--
+      工具白名单治理的 REST 接入层。放在 tool-gateway 之后、ontology 之前：
+      它依赖 tool-gateway，而 archtest 要能看到前面所有模块的字节码。
+      不能并进 oncall-config-admin：F3 禁止 com.oncall.config.. 依赖
+      com.oncall.toolgateway..，且那条规则刻意没有 .admin.. 例外。
+    -->
+    <module>oncall-tool-admin</module>
+    <!--
       放在 tool-gateway 之后：本体规则要引用 domain 的 RiskLevel，
       架构测试要看到前面所有模块的字节码。Maven 的 reactor 会自己排序，
       但这里的顺序就是阅读顺序，所以按依赖方向写。

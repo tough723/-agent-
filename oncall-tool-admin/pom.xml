@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.oncall</groupId>
+    <artifactId>oncall-agent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>oncall-tool-admin</artifactId>
+  <name>oncall-tool-admin</name>
+
+  <!--
+    工具白名单治理的 REST 接入层。
+
+    为什么不放进 oncall-config-admin：
+      ArchUnit 的 F3 规则明确禁止 com.oncall.config.. 依赖 com.oncall.toolgateway..
+      （配置层反向依赖上层会形成环，且让配置层无法独立测试）。
+      把工具治理的控制器塞进 com.oncall.config.admin 会当场违规。
+      而且语义上也不对——工具白名单不是配置项，它是安全模型的事实来源，
+      变更走的是「双人复核 + 审计」而不是「改一个值」。
+
+    为什么不放进 oncall-tool-gateway：
+      那个模块刻意只依赖 Spring AI 与 oncall-domain，不引 Spring Web。
+      一旦在里面放 @RestController，这条约束就破了，
+      而 HTTP 绑定本来就该是可替换的适配器。
+      与 oncall-config / oncall-config-admin 的切分是同一个理由。
+
+    依赖方向：tool-admin -> tool-gateway -> domain，不反向。
+  -->
+
+  <dependencies>
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-tool-gateway</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
+      领域层：Operator / ToolPolicy / RiskLevel / ToolSource 都住在这里。
+      tool-gateway 已经传递依赖了它，但本模块的源码直接 import 这些类型，
+      所以显式声明——传递依赖不是契约，哪天 tool-gateway 换了内部结构，
+      这里就会在没有改动本模块的情况下编译失败。
+    -->
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-domain</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
+      只用 starter-web 里的 spring-web / spring-webmvc / jackson。
+      不引 spring-boot-starter（自动装配）——本模块只提供 Controller，
+      由最终的应用模块决定如何装配。
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

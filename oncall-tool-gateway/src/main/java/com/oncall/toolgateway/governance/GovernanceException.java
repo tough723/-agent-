@@ -10,7 +10,9 @@ import com.oncall.domain.governance.ReviewVerdict;
  * 前端的处置也不同——过期要重走流程，自审要换人。
  * 只带消息就得靠字符串匹配来分流，那迟早会错。
  *
- * <p>{@link #NOT_FOUND} 不是复核判定的一种，所以那种情况下 {@code verdict} 为 {@code null}。
+ * <p>{@link #NOT_FOUND} 与 {@code FORBIDDEN} 都不是复核判定的一种，
+ * 所以那种情况下 {@code verdict} 为 {@code null}——
+ * 接入层据此区分「复核判定失败」（有 verdict）与「请求本身不合法」（无 verdict）。
  */
 public class GovernanceException extends RuntimeException {
 
@@ -32,6 +34,18 @@ public class GovernanceException extends RuntimeException {
 
     public static GovernanceException badRequest(String message) {
         return new GovernanceException("BAD_REQUEST", null, message);
+    }
+
+    /**
+     * 身份有效但角色不允许。
+     *
+     * <p><b>与 {@link #badRequest} 分开，因为 HTTP 语义不同</b>：
+     * {@code BAD_REQUEST} 是"请求写错了，改一下重发"，
+     * {@code FORBIDDEN} 是"请求没问题，但你没这个权限，换个人"。
+     * 前端对两者的处置不同，混成一个码就会把"换人"显示成"参数有误"。
+     */
+    public static GovernanceException forbidden(String message) {
+        return new GovernanceException("FORBIDDEN", null, message);
     }
 
     public static GovernanceException fromVerdict(ReviewVerdict verdict, String message) {

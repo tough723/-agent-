@@ -37,6 +37,7 @@ class ArchitectureRuleTest {
             "com.oncall.domain",
             "com.oncall.config",
             "com.oncall.toolgateway",
+            "com.oncall.tooladmin",
             "com.oncall.ontology"
     };
 
@@ -210,7 +211,7 @@ class ArchitectureRuleTest {
             noClasses().that().resideInAnyPackage("com.oncall.domain..")
                     .should().dependOnClassesThat()
                     .resideInAnyPackage("com.oncall.config..", "com.oncall.toolgateway..",
-                            "com.oncall.ontology..")
+                            "com.oncall.tooladmin..", "com.oncall.ontology..")
                     .because("领域层是叶子：被所有人依赖，不依赖任何人。"
                             + "已核实的依赖方向为 config-admin -> config、"
                             + "tool-gateway -> domain、ontology -> domain")
@@ -220,6 +221,54 @@ class ArchitectureRuleTest {
     @DisplayName("F4 通过：领域层是依赖图的叶子")
     void f4DomainIsLeaf() {
         assertRulePasses(F4_DOMAIN_IS_LEAF, production);
+    }
+
+    // ------------------------------------------ F10 两个接入层互不依赖
+
+    /**
+     * F10：{@code com.oncall.tooladmin} 不得依赖 {@code com.oncall.config}，
+     * 且 {@code com.oncall.toolgateway} 不得依赖 {@code com.oncall.tooladmin}。
+     *
+     * <p><b>为什么这条规则值得单独写</b>：两个 REST 接入层（配置治理、工具治理）
+     * 的错误响应体长得几乎一样，"复用一下"的诱惑很实在——
+     * 而一旦 {@code tool-admin} 引了 {@code config-admin} 的 {@code ApiError}，
+     * 两个模块就在编译期绑死了：配置侧改一次错误码，工具侧跟着变，
+     * 而两边的前端分支逻辑是分开演进的。
+     * 更实际的问题是它们各带一个 {@code @RestControllerAdvice}，
+     * 同时在 classpath 上时匹配顺序不确定，共用类型会让故障更难定位。
+     *
+     * <p>第二条（gateway 不得依赖 tool-admin）是常规的适配器方向约束：
+     * 内核不知道 HTTP 的存在，换掉传输层不该动到内核。
+     */
+    private static final ArchRule F10_ADMIN_ADAPTERS_ARE_DECOUPLED =
+            noClasses().that().resideInAnyPackage("com.oncall.tooladmin..")
+                    .should().dependOnClassesThat().resideInAnyPackage("com.oncall.config..")
+                    .because("工具治理与配置治理是两个独立适配器，"
+                            + "共用类型会让它们绑死，而两边的错误码是分开演进的")
+                    .as("F10a 工具接入层不得依赖配置层");
+
+    private static final ArchRule F10B_GATEWAY_IS_ADAPTER_FREE =
+            noClasses().that().resideInAnyPackage("com.oncall.toolgateway..")
+                    .should().dependOnClassesThat().resideInAnyPackage("com.oncall.tooladmin..")
+                    .because("内核不知道传输层的存在：换掉 HTTP 绑定不该动到网关")
+                    .as("F10b 工具网关不得依赖其接入层");
+
+    @Test
+    @DisplayName("F10 通过：两个接入层互不依赖，网关不依赖适配器")
+    void f10AdminAdaptersAreDecoupled() {
+        assertRulePasses(F10_ADMIN_ADAPTERS_ARE_DECOUPLED, production);
+        assertRulePasses(F10B_GATEWAY_IS_ADAPTER_FREE, production);
+    }
+
+    @Test
+    @DisplayName("F10 非空转：工具接入层的类确实在扫描范围内")
+    void f10CoversTheToolAdminAdapter() {
+        // 与 F2 的非空转检查同理：漏掉一个包，规则会一路绿灯却什么都没查。
+        // CI 是显式枚举模块的，新模块被漏掉时「测试数 > 0」这道保险也拦不住。
+        assertTrue(production.contain("com.oncall.tooladmin.ToolPolicyAdminController"),
+                "没扫到 ToolPolicyAdminController，F10 的通过是空转的");
+        assertTrue(production.contain("com.oncall.tooladmin.ToolAdminExceptionHandler"),
+                "没扫到 ToolAdminExceptionHandler，F10 的通过是空转的");
     }
 
     // ------------------------------------------------------------ 工具方法

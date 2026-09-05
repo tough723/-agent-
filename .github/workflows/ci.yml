@@ -57,7 +57,7 @@ jobs:
           grep -Eo "org.springframework.ai:[a-z-]+:jar:[0-9][^ :]*" /tmp/spring-ai-tree.txt 2>/dev/null \
             | sort -u | head -8 | sed 's/^/::notice::AI-DEP /' || true
 
-      # 六个模块统一走这个模式：失败时把 [ERROR] 行与失败测试作为 annotation 发出。
+      # 七个模块统一走这个模式：失败时把 [ERROR] 行与失败测试作为 annotation 发出。
       # 原因是 CI 的 job 日志在开发沙箱里取不到（下载接口 SSL 失败），
       # check-run annotation 是唯一可读的输出通道——没有它就等于闭着眼睛改。
       - name: Build & test oncall-domain (纯 Java，零外部依赖)
@@ -71,6 +71,9 @@ jobs:
 
       - name: Build & test oncall-tool-gateway (依赖 Spring AI)
         run: ./.github/mvn-test.sh oncall-tool-gateway
+
+      - name: Build & test oncall-tool-admin (工具白名单治理 REST 接入层)
+        run: ./.github/mvn-test.sh oncall-tool-admin
 
       - name: Build & test oncall-ontology (轻量本体，纯 Java，零外部依赖)
         run: ./.github/mvn-test.sh oncall-ontology
