@@ -13,12 +13,8 @@
 
 `.github/workflows/ci.yml` 在每次 push 时用 JDK 17 + Maven 3.9.16 真实编译并跑测试，
 另有一个独立的 job 用真实 PostgreSQL 16 + pgvector 跑 DDL。
-**最近一次全绿**：run `33983334064` / conclusion `success`（两个 job 都是），
-commit `e7b596a`。下表是那次实测的数字。
-
-> 本轮（幂等账本，见 §1.5）新增了 3 个生产类、2 个测试类、24 个用例，
-> 并给 `db/migration` 加了 V7。**下表仍是上一次实测值**，本轮的预期数字
-> 见 §1.5 末尾的表——CI 跑完前不把它写成"已验证"。
+**最近一次全绿**：run `33984843271` / conclusion `success`（两个 job 都是），
+commit `93b31fb`。下表是那次实测的数字（读自 check-run annotations，不是预测值）。
 
 | 步骤 | 结果 |
 |------|------|
@@ -31,11 +27,12 @@ commit `e7b596a`。下表是那次实测的数字。
 | Build & test `oncall-tool-gateway`（依赖 Spring AI） | ✅ |
 | Build & test `oncall-ontology`（轻量本体，纯 Java，零外部依赖） | ✅ |
 | Build & test `oncall-archtest`（架构约束 F1–F4、F9） | ✅ `archunit:1.4.2` |
-| Assert tests actually ran | ✅ `报告文件=20 测试总数=280 失败=0 错误=0 跳过=0` |
-| **DDL on PostgreSQL 16 + pgvector** | ✅ V1–V6 各 6/6，**重复执行也 6/6**，表数 **18** |
+| Assert tests actually ran | ✅ `报告文件=22 测试总数=304 失败=0 错误=0 跳过=0` |
+| **DDL on PostgreSQL 16 + pgvector** | ✅ V1–V7 各 7/7，**重复执行也 7/7**，表数 **19** |
 
-**测试数字对得上**：20 个报告文件对应 20 个测试类，280 = 已有 184 +
-`oncall-ontology` 59 + `oncall-archtest` 8 + MCP 纳管等本轮新增 29。
+**测试数字对得上**：22 个报告文件对应 22 个测试类，304 =
+domain 16 + config 82 + config-admin 35 + tool-gateway 104 + ontology 59 + archtest 8。
+其中 tool-gateway 的 104 = 上一轮 80 + 幂等账本轮 24。
 
 **DDL job 的断言**：`information_schema` 表数必须恰好命中期望值
 （本轮起是 19 = 16 张逻辑表 + 3 个 DEFAULT 分区），`uq_agent_step_idem`、
@@ -238,17 +235,19 @@ OWL 与 SWRL 都单调、无否定即失败，表达不了「除非…否则…�
 | `RuleEngine` | 顺序执行，效果**取更严格的一档**（不是叠加也不是覆盖）；单条规则异常不连带其余约束失效 |
 
 **M2 建表**：`db/migration/` 从 1 个脚本增至 6 个，表从 2 张增至 **15 张**。
-两个数据库级不变量落到了约束上：
+数据库级不变量落到了约束上（**注意粒度，别把两条幂等约束混为一谈**）：
 
-| 约束 | 保证的不变量 |
-|------|-------------|
-| `uq_agent_step_idem UNIQUE (idempotency_key)` | I8 幂等。**多实例下应用层幂等会失效**，只有数据库约束是物理保证 |
-| `chk_approval_not_self CHECK (approver IS NULL OR approver <> requester)` | I3 不能复核自己。放应用层等于让人改一行代码就绕过 |
+| 约束 | 粒度 | 保证的不变量 |
+|------|------|-------------|
+| `tool_execution_claim` 主键（V7） | **工具调用**（`runId\|step\|toolName\|canonicalArgs`） | **I8 幂等的物理保证**。见 §1.5 |
+| `uq_agent_step_idem UNIQUE (idempotency_key)` | **步**（`agent_step` 一行） | 同一个步不会被插入两次（消息重投 / 整步重放）。**约束不到工具调用**——一步内可以有多次不同的工具调用 |
+| `chk_claim_state CHECK (state IN ('CLAIMED','COMPLETED'))` | 幂等行状态 | 账本不会进入无法判定的第三态 |
+| `chk_approval_not_self CHECK (approver IS NULL OR approver <> requester)` | 审批单 | I3 不能复核自己。放应用层等于让人改一行代码就绕过 |
 
-> **✅ V1–V6 已在真实 PostgreSQL 16 + pgvector 上执行通过，重复执行也通过。**
+> **✅ V1–V7 已在真实 PostgreSQL 16 + pgvector 上执行通过，重复执行也通过。**
 > CI 里有独立的 `DDL on PostgreSQL 16 + pgvector` job（service 容器 `pgvector/pgvector:pg16`），
-> `information_schema` 报 18 张 = 15 张逻辑表 + 3 个 DEFAULT 分区，
-> `uq_agent_step_idem` 与 `chk_approval_not_self` 的存在性是硬断言。
+> `information_schema` 报 19 张 = 16 张逻辑表 + 3 个 DEFAULT 分区，
+> 上表四条约束的存在性都是硬断言（run `33984843271`，`DDL-约束 4/4`）。
 > 加这个 job 之前它们从未被任何数据库执行过——H2 不支持 `PARTITION BY RANGE`
 > 与 `vector(1024)`。详见 [5.数据库设计文档.md](5.数据库设计文档.md) §8.2。
 
@@ -369,14 +368,25 @@ JDBC 版靠主键冲突。应用层的 `SELECT` 再 `INSERT` 之间永远有窗�
 
 #### 本轮改动的预期数字（CI 跑完前不写成"已验证"）
 
-| 指标 | `e7b596a` 实测 | 本轮 | 依据 |
-|------|---------------|------|------|
-| 测试类 / 报告文件 | 20 | **22** | 新增 `InMemoryToolExecutionLedgerTest`、`JdbcToolExecutionLedgerTest` |
-| 测试用例 | 280 | **304** | +4（`GuardedToolCallbackTest` 26→30）+14（JDBC）+6（内存）= +24，逐文件 `@Test` 清点 |
-| `oncall-tool-gateway` | 17 类 / 80 用例 | **20 类 / 104 用例** | 同上 |
-| 生产类合计 | 75 | **78** | +3 |
-| DDL 表数 | 18 | **19** | V7 加 1 张逻辑表，DEFAULT 分区仍是 3 |
-| DDL 约束断言 | 2 条 | **4 条** | 加 `chk_claim_state`、`tool_execution_claim_pkey` |
+| 指标 | `e7b596a` 实测 | 本轮预测 | **run `33984843271` 实测** |
+|------|---------------|---------|------------------------------|
+| 测试类 / 报告文件 | 20 | 22 | ✅ **22** |
+| 测试用例 | 280 | 304 | ✅ **304**（失败 0 / 错误 0 / 跳过 0） |
+| `oncall-tool-gateway` 用例 | 80 | 104 | ✅ **104** |
+| 生产类合计 | 75 | 78 | 本地清点 78（CI 不统计此项） |
+| DDL 表数 | 18 | 19 | ✅ **19** |
+| DDL 约束断言 | 2 条 | 4 条 | ✅ 4/4（合并为一条 notice 输出，见下） |
+
+> 预测与实测逐项吻合。中间红过两次，都是**我的断言或声明写错，不是生产代码错**：
+> run `33984616442` 编译失败（`completeSurvivesStaleCleanupRace` 调 `age()`
+> 漏了 `throws`）；run `33984722772` 断言失败
+> （`concurrentCallsExecuteExactlyOnce` 期望 1 实得 16，见上）。
+>
+> **DDL 约束断言为什么要合并成一条 notice**：GitHub 对单个 check run
+> 每个级别最多保留 **10 条** annotation，本 job 已有 7 条 `DDL-OK` + 1 条幂等，
+> 逐条发约束 notice 会被截断——run `33984843271` 就只留下了前两条约束，
+> 后两条只能靠「没有 error 所以通过了」反推。断言通过与否必须**看得见**，
+> 不能靠 absence 推断。现在输出 `DDL-约束 4/4 全部存在: ...` 一条。
 
 #### ⚠️ 本轮查出但**没有**顺手改的一件事
 
@@ -426,10 +436,19 @@ void recordSuccess(String idempotencyKey, String toolName, String args, String r
 | `WecomApprovalGate` | 企微卡片 + `expires_at` + 超时升级 + 双人复核 |
 | `AutonomyLevel` 接入调用链 | 与 `KillSwitch` 取交集：先 `assertAllowed()` 再 `canAutoExecute()` |
 
-**已完成**：`GuardedToolCallbackTest`（24 个用例，见下）、
-**`McpToolRegistrar`**（22 个用例，见 §1.4）——M1 里唯一的**安全**缺口已堵。
-上面 5 项剩余的都是工程收尾，不是安全缺口：`JdbcToolAuditLog` 是唯一有安全含义的一项
-（内存版在多实例下幂等会失效），但它的数据库约束 `uq_agent_step_idem` 已经建好并验证过。
+**已完成**：`GuardedToolCallbackTest`（30 个用例，见下）、
+**`McpToolRegistrar`**（22 个用例，见 §1.4，堵住 I14）、
+**幂等账本三件套**（24 个用例，见 §1.5，堵住 I8）——M1 的两个**安全**缺口都已堵。
+
+上面 5 项剩余的都是工程收尾，不是安全缺口。
+`JdbcToolAuditLog` 仍然带安全含义，但**理由已经变了**：原先写的是
+「内存版在多实例下幂等会失效」——那句话现在不成立了，幂等已由
+`tool_execution_claim`（V7）+ `JdbcToolExecutionLedger` 独立解决，与审计表无关；
+而 `uq_agent_step_idem` 的粒度是「步」，本来就管不到工具调用。
+它真正的安全含义是**审计自身的持久性**：内存版重启即丢，出事后无从追责。
+而且它现在**被卡住**——`ToolAuditLog` 的签名给不出 `tool_audit_log` 的必填列
+（`trace_id` / `tool_source` / `risk_level` / `gate_outcome`），
+见 §1.5 末尾与 [DEVLONG.md](DEVLONG.md) §9 第五项。
 
 **验收**（对应修复方案 F1.7）：
 - [ ] 未注册工具 → `ToolDeniedException` + 有拒绝审计

@@ -268,10 +268,9 @@
   能判定的是实现类的集合。
 - **M2 的 9 张表 DDL**（V2–V5）+ **轻量本体 4 张表**（V6）
   + **幂等账本 1 张**（V7），共 16 张。
-  V1–V6 **全部在真实 PostgreSQL 16 + pgvector 上执行通过，重复执行也通过**
-  （CI job `DDL on PostgreSQL 16 + pgvector`，run `33983334064`；
-  `information_schema` 报 18 张 = 15 张逻辑表 + 3 个 DEFAULT 分区）。
-  V7 是本轮新增，**尚未经 CI 实测**，跑过后应为 19 张 = 16 张逻辑表 + 3 个分区。
+  V1–V7 **全部在真实 PostgreSQL 16 + pgvector 上执行通过，重复执行也通过**
+  （CI job `DDL on PostgreSQL 16 + pgvector`，run `33984843271`；
+  `information_schema` 报 **19** 张 = 16 张逻辑表 + 3 个 DEFAULT 分区）。
   数据库级不变量已落到约束上：`chk_approval_not_self`（I3 "不能复核自己"）、
   `tool_execution_claim` 的主键（**I8 幂等的物理保证**）、`chk_claim_state`，
   外加 `uq_agent_step_idem`（步级幂等，**不覆盖工具调用**），

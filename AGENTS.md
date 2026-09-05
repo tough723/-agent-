@@ -20,7 +20,7 @@
 |----|-----|
 | 分支 | `arena/01a06d8c-agent`（**只在这个分支上工作**） |
 | 模块 | `oncall-domain`、`oncall-config`、`oncall-config-admin`、`oncall-tool-gateway`、`oncall-ontology`、`oncall-archtest`（仅测试） |
-| 测试 | 304 个用例 / 22 个测试类（本轮 +24 / +2，CI 数字待本次 run 确认） |
+| 测试 | **304 个用例 / 22 个测试类**（CI run `33984843271` 实测，失败 0） |
 | 配置项 | 41 项（24 `RUNTIME_HOT` / 8 `REQUIRES_MIGRATION` / 9 `BACKEND_ONLY`） |
 | 数据库 | 15 张表的 DDL 已写入，全部在真实 PostgreSQL 16 + pgvector 上执行通过（含重复执行） |
 | 阶段 | M1 / M1.5 完成，M2 起 |

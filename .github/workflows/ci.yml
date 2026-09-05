@@ -215,16 +215,27 @@ jobs:
           # tool_execution_claim_pkey 尤其关键：GuardedToolCallback 的抢占语义
           # 完全建立在「第二个 INSERT 一定失败」之上，主键写漏了整条防线就没了，
           # 而且单实例测试照样全绿——只有多实例线上才会暴露成二次扩容。
-          for c in uq_agent_step_idem chk_approval_not_self chk_claim_state tool_execution_claim_pkey; do
+          #
+          # 断言结果合并成**一条** notice 输出，而不是每条约束一条：
+          # GitHub 对单个 check run 每个级别最多保留 10 条 annotation，
+          # 本 job 已经有 7 条 DDL-OK + 1 条幂等，逐条发约束 notice 会被截断——
+          # run 33984843271 就只留下了前两条，后两条只能靠「没有 error 所以通过了」
+          # 反推。断言通过与否必须是**看得见**的，不能靠 absence 推断。
+          expected="uq_agent_step_idem chk_approval_not_self chk_claim_state tool_execution_claim_pkey"
+          found=""
+          for c in $expected; do
             got=$(psql -h localhost -U postgres -d oncall -tAc \
               "SELECT count(*) FROM pg_constraint WHERE conname='$c'")
             if [ "$got" = "1" ]; then
-              echo "::notice::DDL-约束 $c 存在"
+              found="$found $c"
             else
               echo "::error::DDL-约束 $c 缺失（不变量已失去物理保证）"
               fail=1
             fi
           done
+          nfound=$(echo $found | wc -w)
+          nexpected=$(echo $expected | wc -w)
+          echo "::notice::DDL-约束 $nfound/$nexpected 全部存在:$found"
           exit $fail
 
       - name: Verify idempotency re-run (脚本必须可重复执行)
