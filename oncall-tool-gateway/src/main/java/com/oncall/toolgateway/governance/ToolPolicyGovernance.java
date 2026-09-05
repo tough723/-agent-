@@ -116,7 +116,7 @@ public class ToolPolicyGovernance {
         if (!delta.widens()) {
             apply(change);
             audit.recordApplied(ticket, requester.principal(),
-                    ToolPolicyChangeAudit.Outcome.APPLIED_DIRECTLY);
+                    ToolPolicyChangeAudit.Outcome.APPLIED_DIRECTLY, ticket.createdAtMillis());
             return new Proposal(true, null, delta);
         }
 
@@ -154,14 +154,15 @@ public class ToolPolicyGovernance {
                     || outcome.verdict() == ReviewVerdict.STALE) {
                 tickets.remove(ticketId);
             }
-            audit.recordRejected(ticket, reviewer.principal(), outcome.message());
+            audit.recordRejected(ticket, reviewer.principal(), outcome.message(),
+                    clock.getAsLong());
             throw GovernanceException.fromVerdict(outcome.verdict(), outcome.message());
         }
 
         tickets.remove(ticketId);
         apply(ticket.change());
         audit.recordApplied(ticket, reviewer.principal(),
-                ToolPolicyChangeAudit.Outcome.APPLIED_AFTER_REVIEW);
+                ToolPolicyChangeAudit.Outcome.APPLIED_AFTER_REVIEW, clock.getAsLong());
         return ticket;
     }
 
@@ -175,7 +176,7 @@ public class ToolPolicyGovernance {
         }
         tickets.remove(ticketId);
         audit.recordRejected(ticket, operator.principal(),
-                (note == null || note.isBlank()) ? "驳回" : note.trim());
+                (note == null || note.isBlank()) ? "驳回" : note.trim(), clock.getAsLong());
     }
 
     /** 当前未决单子，按发起时间排序。 */

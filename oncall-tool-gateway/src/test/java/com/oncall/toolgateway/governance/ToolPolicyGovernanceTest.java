@@ -283,8 +283,42 @@ class ToolPolicyGovernanceTest {
         governance.reject(ticket.id(), ALICE_EDITOR, "算了");
 
         assertThat(store.size()).isZero();
+        // 断言的是完整顺序而不是 recent(1)：
+        // 发起与驳回落在同一毫秒是正常操作，只按时间戳排序会不确定。
+        // CI run 33986494127 就在这里红了（expected REJECTED but was PROPOSED）。
+        assertThat(audit.history(TOOL))
+                .extracting(ToolPolicyChangeAudit.Entry::outcome)
+                .containsExactly(ToolPolicyChangeAudit.Outcome.PROPOSED,
+                        ToolPolicyChangeAudit.Outcome.REJECTED);
         assertThat(audit.recent(1).get(0).outcome())
+                .as("最近一条必须是驳回")
                 .isEqualTo(ToolPolicyChangeAudit.Outcome.REJECTED);
+    }
+
+    @Test
+    @DisplayName("同一毫秒内的多条审计事件仍按发生顺序排列——「先发起还是先被拒」必须有唯一答案")
+    void auditOrderIsDeterministicWithinTheSameMillisecond() {
+        // 整段流程不推进时钟：所有事件的 atMillis 完全相同。
+        var alice = new Operator("alice", Operator.Role.ADMIN);
+        var ticket = governance.propose(ToolPolicyChange.grant(highRisk()), alice, "r").ticket();
+        governance.confirm(ticket.id(), BOB_ADMIN, null);
+
+        // 撤销是收紧 ⇒ 直接生效，不产生待复核单，因此审计里只有一条
+        // APPLIED_DIRECTLY 而没有配对的 PROPOSED（它从未"待决"过）。
+        var revoke = governance.propose(ToolPolicyChange.revoke(TOOL), alice, "r2");
+
+        assertThat(revoke.appliedDirectly()).isTrue();
+        assertThat(revoke.ticket()).isNull();
+        assertThat(audit.history(TOOL))
+                .extracting(ToolPolicyChangeAudit.Entry::outcome)
+                .containsExactly(
+                        ToolPolicyChangeAudit.Outcome.PROPOSED,
+                        ToolPolicyChangeAudit.Outcome.APPLIED_AFTER_REVIEW,
+                        ToolPolicyChangeAudit.Outcome.APPLIED_DIRECTLY);
+        assertThat(audit.recent(3)).hasSize(3);
+        assertThat(audit.recent(3).get(0).outcome())
+                .as("倒序第一条应是最后发生的那件")
+                .isEqualTo(ToolPolicyChangeAudit.Outcome.APPLIED_DIRECTLY);
     }
 
     @Test
