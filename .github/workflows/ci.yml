@@ -21,8 +21,11 @@ jobs:
           java-version: '17'
           cache: maven
 
-      # 分模块跑，便于定位是哪个模块失败。
-      # -fae = fail at end，即使前面失败也继续，拿到完整信息。
+      # POM 模型校验单独一步：依赖版本缺失这类问题会在这里暴露，
+      # 而不是混在编译错误里。注意它是整个 reactor 的校验，
+      # 任一模块 POM 有问题都会失败。
+      - name: Validate POM model (all modules)
+        run: mvn -B validate 2>&1 | tee /tmp/validate.log
 
       - name: Record resolved Spring AI version (ADR-001)
         run: |
@@ -32,10 +35,29 @@ jobs:
           cat /tmp/spring-ai-tree.txt 2>/dev/null || echo "(dependency:tree unavailable)"
 
       - name: Build & test oncall-domain (纯 Java，零外部依赖)
-        run: mvn -B -pl oncall-domain -am test
+        run: mvn -B -pl oncall-domain -am test 2>&1 | tee /tmp/domain.log
 
       - name: Build & test oncall-tool-gateway (依赖 Spring AI)
-        run: mvn -B -pl oncall-tool-gateway -am test
+        run: mvn -B -pl oncall-tool-gateway -am test 2>&1 | tee /tmp/gateway.log
+
+      # 失败时把关键错误回显到 job summary，便于从 API 侧读取
+      - name: Surface errors on failure
+        if: failure()
+        run: |
+          {
+            echo "## 构建失败摘要"
+            for f in /tmp/validate.log /tmp/domain.log /tmp/gateway.log; do
+              [ -f "$f" ] || continue
+              echo ""
+              echo "### $f"
+              echo '```'
+              grep -E "\[ERROR\]|BUILD FAILURE|Could not resolve|Non-resolvable|is missing|error:|Tests run:.*Failures" "$f" | head -40
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "===== validate ====="; grep -E "\[ERROR\]|BUILD FAILURE" /tmp/validate.log 2>/dev/null | head -20
+          echo "===== domain ====="; grep -E "\[ERROR\]|BUILD FAILURE|error:" /tmp/domain.log 2>/dev/null | head -30
+          echo "===== gateway ====="; grep -E "\[ERROR\]|BUILD FAILURE|error:" /tmp/gateway.log 2>/dev/null | head -30
 
       - name: Upload surefire reports
         if: always()
