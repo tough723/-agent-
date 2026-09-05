@@ -15,8 +15,9 @@
 |----|-----|
 | 分支 | `arena/01a06d8c-agent` |
 | CI | GitHub Actions，JDK 17 temurin + Maven 3.9.16 |
-| 测试 | **184 个用例 / 15 个测试类，全通过** |
-| 已落地模块 | `oncall-domain`、`oncall-config`、`oncall-config-admin`、`oncall-tool-gateway` |
+| 测试 | **250 个用例 / 19 个测试类，全通过** |
+| 已落地模块 | `oncall-domain`、`oncall-config`、`oncall-config-admin`、`oncall-tool-gateway`、`oncall-ontology`、`oncall-archtest`（仅测试） |
+| 数据库 | 15 张表的 DDL 已写入 `db/migration/`；**V2–V6 的 13 张未在任何数据库上执行过** |
 | 阶段 | M1 完成，M1.5 完成，M2 起 |
 
 ```
@@ -40,7 +41,7 @@ mvn -B -pl oncall-config-admin -am test    # 单模块
 | [2.项目整体架构和技术栈选型分析设计文档.md](2.项目整体架构和技术栈选型分析设计文档.md) | 系统架构图、架构模式、技术栈选型与取舍、技术栈架构图 |
 | [3.接口设计api规范.md](3.接口设计api规范.md) | REST 规范、已实现端点、规划端点、错误码、SSE 契约 |
 | [4.开发编码规范.md](4.开发编码规范.md) | 后端规范 + 前端规范 + 已在本项目踩过的坑 |
-| [5.数据库设计文档.md](5.数据库设计文档.md) | 11 张表的 DDL、索引、约束、迁移策略 |
+| [5.数据库设计文档.md](5.数据库设计文档.md) | 15 张表的 DDL、索引、约束、迁移策略，含「未执行 DDL」的风险清单 |
 | [6.部署文档.md](6.部署文档.md) | 环境、拓扑、配置、发布与回滚、上线检查表 |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | **施工进度表**：M1–M7 逐模块推进状态与验收点 |
 
@@ -105,8 +106,18 @@ mvn -B -pl oncall-config-admin -am test    # 单模块
 
 - 其他所有控制（策略表、放权等级、审批流、审计）都**假设**这个关卡会被执行。
   关卡一旦被绕过，它们全部变成装饰。
-- 因此有一道架构约束（F9）：**用 ArchUnit 禁止在网关之外直接调用
-  `ToolCallback.call`**。没有这道约束，基石就是自愿遵守的君子协定。
+- 因此有一道架构约束（F9，已在 `oncall-archtest` 实现）：
+  **除 `GuardedToolCallback` 外，任何类都不得实现 `ToolCallback`**。
+  没有这道约束，基石就是自愿遵守的君子协定。
+  > **为什么不是「禁止在网关之外调用 `ToolCallback.call`」**：
+  > 那个表述在静态分析下不可判定——编排层和 Spring AI 内部**必须**调用 `call`，
+  > ArchUnit 无法区分「调的是被包装过的实例」还是「调的是裸实例」，
+  > 那是运行时属性。能静态判定的是**实现类的集合**：
+  > 只要 `GuardedToolCallback` 是唯一实现，编排层手里的任何 `ToolCallback`
+  > 实例就必然是被包装过的。约束的是「有哪些类」，而不是「谁调了方法」。
+- **规则必须自证会失败**：`oncall-archtest` 里放了一个故意违规的 fixture，
+  并断言 F9 确实会拦下它。一条从没红过的规则等于没写——
+  它可能因为包名写错而静默通过，而 CI 里两种情况长得一模一样。
 - **最大的威胁是 MCP 工具**：它们在运行时才拉取，注解式风险分级看不见它们。
   所以 MCP 必须关掉自动注册（`toolcallback.enabled=false`，默认是 true），
   改为显式纳管并打 `mcp:<server>:` 前缀。
@@ -123,12 +134,19 @@ oncall-agent (parent)
 ├── oncall-domain          纯 Java，零依赖    状态机 / 风险等级 / 放权闸门
 ├── oncall-config          纯 Java，零依赖    配置治理与前端可配置化
 ├── oncall-config-admin    Spring Web         配置治理的 REST 接入层
-└── oncall-tool-gateway    Spring AI          工具调用安全核心 ← 基石所在
+├── oncall-tool-gateway    Spring AI          工具调用安全核心 ← 基石所在
+├── oncall-ontology        纯 Java，零依赖    轻量本体：概念 / 关系 / 4 条规则
+└── oncall-archtest        仅测试，无生产代码  架构约束 F1–F4、F9
 ```
 
-依赖方向严格单向。**`oncall-domain` 与 `oncall-config` 生产代码零外部依赖**是
-硬约束：它们的逻辑必须能脱离 Spring 单元测试。HTTP 绑定、JDBC 实现都是适配器，
-放在各自的 admin / store 子包或独立模块里。
+依赖方向严格单向（已核实的边：`config-admin → config`、`tool-gateway → domain`、
+`ontology → domain`）。**`oncall-domain`、`oncall-config`、`oncall-ontology`
+生产代码零外部依赖**是硬约束：它们的逻辑必须能脱离 Spring 单元测试。
+HTTP 绑定、JDBC 实现都是适配器，JDBC 只用 JDK 自带的 `javax.sql`，
+H2 只出现在测试作用域。这条约束由 `oncall-archtest` 的 F2 规则守着，不靠自觉。
+
+> `oncall-archtest` 排在最后且依赖全部模块：F9 要能看到网关**以外**的代码，
+> 否则将来 `oncall-agent` 里新写一个 `ToolCallback` 实现就拦不住了。
 
 ---
 
@@ -142,6 +160,7 @@ oncall-agent (parent)
 | AI 框架（阿里） | Spring AI Alibaba | 1.1.2.3 |
 | 数据库 | PostgreSQL + pgvector | 10+ |
 | 测试 | JUnit 5 / AssertJ / MockMvc / H2 | 5.10.2 / 3.25.3 / — / 2.3.232 |
+| 架构测试 | ArchUnit（核心包，非 junit5 集成包） | 1.4.2 |
 
 版本选择的理由与「重新评估触发条件」见
 [可行性优化与拓展设计.md](可行性优化与拓展设计.md) 的 ADR-001~007。

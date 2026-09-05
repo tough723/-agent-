@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.oncall</groupId>
+    <artifactId>oncall-agent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>oncall-archtest</artifactId>
+  <name>oncall-archtest</name>
+
+  <!--
+    架构约束测试（ArchUnit）。
+
+    【为什么单独一个模块】
+    F9「除 GuardedToolCallback 外任何类都不得实现 ToolCallback」必须能看到
+    网关以外的代码——将来 oncall-agent 里新写一个 ToolCallback 实现，
+    规则要能拦住它。放在 oncall-tool-gateway 的测试里看不到别的模块，等于没守。
+    这个模块不产出任何生产代码，只有测试。
+
+    【为什么用 archunit 核心包而不是 archunit-junit5】
+    archunit-junit5 会注册第二个 JUnit Platform TestEngine。
+    当前环境无法本地编译验证，多一个引擎就多一处不可控；
+    用核心包 + 普通 JUnit 5 测试，规则失败时我能自己控制异常信息长度
+    （GitHub 每级注解上限 10 条，超长会把真正的栈顶挤掉）。
+
+    【规则必须自证会失败】
+    一条从没红过的规则等于没写。所以这里带一个 fixture 包，
+    里面放一个故意违规的 ToolCallback 实现，并断言规则确实会拦住它。
+  -->
+
+  <dependencies>
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-domain</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-config</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-config-admin</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-tool-gateway</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-ontology</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
+      ToolCallback / ToolDefinition 需要出现在编译期，
+      fixture 要实现它们才能验证 F9 真的会触发。
+      spring-ai-model 由 oncall-tool-gateway 以 compile 作用域传递带入，
+      这里显式声明是为了让「这个测试依赖 Spring AI 的工具 API」这件事可见。
+    -->
+    <dependency>
+      <groupId>org.springframework.ai</groupId>
+      <artifactId>spring-ai-model</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>com.tngtech.archunit</groupId>
+      <artifactId>archunit</artifactId>
+      <version>1.4.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

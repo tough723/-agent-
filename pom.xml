@@ -45,6 +45,14 @@
     <module>oncall-config</module>
     <module>oncall-config-admin</module>
     <module>oncall-tool-gateway</module>
+    <!--
+      放在 tool-gateway 之后：本体规则要引用 domain 的 RiskLevel，
+      架构测试要看到前面所有模块的字节码。Maven 的 reactor 会自己排序，
+      但这里的顺序就是阅读顺序，所以按依赖方向写。
+    -->
+    <module>oncall-ontology</module>
+    <!-- 无生产代码，只有测试：架构约束（含基石 F9）。必须最后，它依赖全部模块。 -->
+    <module>oncall-archtest</module>
   </modules>
 
   <!--

@@ -1,0 +1,220 @@
+package com.oncall.archtest;
+
+import com.oncall.toolgateway.GuardedToolCallback;
+import com.tngtech.archunit.core.domain.JavaClasses;
+import com.tngtech.archunit.core.importer.ClassFileImporter;
+import com.tngtech.archunit.lang.ArchRule;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.ai.tool.ToolCallback;
+
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+/**
+ * 架构约束测试。
+ *
+ * <p><b>为什么这些约束必须是测试而不是文档</b>：
+ * 安全模型里几乎每一层控制都<b>假设 GuardedToolCallback 一定会被执行</b>——
+ * 幂等假设它、审批假设它、审计假设它、预算假设它。
+ * 只要有任何一条代码路径绕过它直接实现 {@link ToolCallback} 并注册出去，
+ * 那七道关卡就全部失效，而且<b>编译通过、启动正常、单元测试全绿</b>。
+ * 这种失效只有架构测试能拦住：它检查的是「有哪些类实现了这个接口」，
+ * 而不是「某次调用的行为对不对」。
+ *
+ * <p>这就是 F9 被列为不可事后补的三项之一的原因。
+ * 另外两项是 {@code OnCallConfigRegistry}（配置项一旦散落就收不回来）
+ * 与数据库 schema（迁移一旦上线就改不了）。
+ */
+class ArchitectureRuleTest {
+
+    /** 生产代码所在的包。测试代码与 fixture 刻意排除在外。 */
+    private static final String[] PRODUCTION_PACKAGES = {
+            "com.oncall.domain",
+            "com.oncall.config",
+            "com.oncall.toolgateway",
+            "com.oncall.ontology"
+    };
+
+    /** 必须保持零外部依赖的模块。已用 grep 核实当前只依赖 java./javax./com.oncall.。 */
+    private static final String[] ZERO_DEP_PACKAGES = {
+            "com.oncall.domain..",
+            "com.oncall.config..",
+            "com.oncall.ontology.."
+    };
+
+    /**
+     * 零依赖模块<b>不得</b>引入的库清单。
+     *
+     * <p><b>为什么是黑名单而不是「只允许 java./javax.」的白名单</b>：
+     * ArchUnit 的 {@code onlyDependOnClassesThat()} 会把对基本类型（{@code int} 等）
+     * 的依赖也算进去，而基本类型的「包名」是空串，白名单写法会误报。
+     * 当前环境无法本地编译验证，一条会误报的规则比没有规则更糟
+     * ——它会在 CI 里制造一个没人看得懂的红灯，然后被人删掉。
+     * 所以这里改成点名具体库：这些库一旦出现在零依赖模块里，
+     * 要么是设计漂移，要么是有人为了省事加依赖。
+     */
+    private static final String[] FORBIDDEN_EXTERNAL_PACKAGES = {
+            "org.springframework..",
+            "com.fasterxml..",
+            "org.slf4j..",
+            "io.micrometer..",
+            "jakarta..",
+            "org.junit..",
+            "org.assertj..",
+            "org.h2..",
+            "com.tngtech.archunit.."
+    };
+
+    private static JavaClasses production;
+
+    @BeforeAll
+    static void importProductionClasses() {
+        production = new ClassFileImporter().importPackages(PRODUCTION_PACKAGES);
+    }
+
+    // ------------------------------------------------------------ F9 基石
+
+    /**
+     * F9：{@link GuardedToolCallback} 是<b>唯一</b>允许存在的 {@link ToolCallback} 实现。
+     *
+     * <p>将来若要加 {@code RateLimitedToolCallback}、{@code TracingToolCallback} 这类装饰器，
+     * 必须把类名加进 {@code orShould} 白名单。<b>加这个名字的动作本身就是评审</b>——
+     * 它会在 code review 里显式出现，而不是藏在某个新文件的 {@code implements} 后面。
+     *
+     * <p>用 {@code areAssignableTo} 而不是 {@code implement}：
+     * 前者覆盖间接实现（继承了一个实现类也算），后者只看直接实现。
+     * 绕过一层继承就失效的规则不算规则。
+     */
+    private static final ArchRule F9_SINGLE_GUARDED_TOOL_CALLBACK =
+            classes().that().areAssignableTo(ToolCallback.class)
+                    .and().areNotInterfaces()
+                    .should().haveFullyQualifiedName(GuardedToolCallback.class.getName())
+                    .because("所有工具调用必须经过 GuardedToolCallback 的七道关卡"
+                            + "（默认拒绝/急停/夹取/幂等/审批/超时熔断/审计）；"
+                            + "新增装饰器必须在此处登记，登记动作本身即评审")
+                    .as("F9 除 GuardedToolCallback 外不得有 ToolCallback 实现");
+
+    @Test
+    @DisplayName("F9 通过：当前只有 GuardedToolCallback 实现 ToolCallback")
+    void f9OnlyGuardedToolCallbackImplementsToolCallback() {
+        assertRulePasses(F9_SINGLE_GUARDED_TOOL_CALLBACK, production);
+    }
+
+    @Test
+    @DisplayName("F9 非空转：GuardedToolCallback 确实被扫到了")
+    void f9IsNotVacuouslyTrue() {
+        // 规则通过有两种可能：真的守住了，或者扫描路径写错、什么都没扫到。
+        // 后者在 CI 里长得一模一样，所以必须单独断言被测对象存在。
+        assertTrue(production.size() > 0,
+                "生产包扫描结果为空，PRODUCTION_PACKAGES 可能写错了");
+        assertTrue(production.contain(GuardedToolCallback.class.getName()),
+                "生产包里没扫到 GuardedToolCallback，F9 的通过是空转的");
+        assertTrue(production.contain("com.oncall.config.OnCallConfigRegistry"),
+                "没扫到配置注册表，说明 com.oncall.config 不在扫描范围内");
+        assertTrue(production.contain("com.oncall.ontology.Ontology"),
+                "没扫到本体门面，说明 com.oncall.ontology 不在扫描范围内");
+    }
+
+    @Test
+    @DisplayName("F9 自证：故意违规的 fixture 必须被规则拦下")
+    void f9RejectsUnguardedImplementation() {
+        // 一条从没红过的规则等于没写。这里证明它在遇到真实违规时会失败。
+        JavaClasses fixture = new ClassFileImporter().importPackages("com.oncall.archtest.fixture");
+        assertTrue(fixture.contain("com.oncall.archtest.fixture.UnguardedToolCallbackFixture"),
+                "fixture 没被扫到，自证失效");
+        assertThrows(AssertionError.class,
+                () -> F9_SINGLE_GUARDED_TOOL_CALLBACK.check(fixture),
+                "F9 对绕过 GuardedToolCallback 的实现没有报错——规则已失效");
+    }
+
+    // ------------------------------------------------------------ F1 领域层纯净
+
+    private static final ArchRule F1_DOMAIN_HAS_NO_SPRING =
+            noClasses().that().resideInAnyPackage("com.oncall.domain..")
+                    .should().dependOnClassesThat().resideInAnyPackage("org.springframework..")
+                    .because("领域层是依赖图的最底层，一旦引入 Spring 就无法在"
+                            + "没有容器的情况下被任何模块复用或单测")
+                    .as("F1 领域层不得依赖 Spring");
+
+    @Test
+    @DisplayName("F1 通过：领域层零 Spring 依赖")
+    void f1DomainStaysFrameworkFree() {
+        assertRulePasses(F1_DOMAIN_HAS_NO_SPRING, production);
+    }
+
+    // ------------------------------------------------------------ F2 零依赖模块
+
+    private static final ArchRule F2_ZERO_DEP_MODULES =
+            noClasses().that().resideInAnyPackage(ZERO_DEP_PACKAGES)
+                    .should().dependOnClassesThat()
+                    .resideInAnyPackage(FORBIDDEN_EXTERNAL_PACKAGES)
+                    .because("domain / config / ontology 是生产代码零外部依赖的模块，"
+                            + "JDBC 只用 JDK 自带的 javax.sql；H2 与 JUnit 只允许出现在测试作用域")
+                    .as("F2 零依赖模块不得引入外部库");
+
+    @Test
+    @DisplayName("F2 通过：domain / config / ontology 未引入外部库")
+    void f2ZeroDependencyModulesStayClean() {
+        assertRulePasses(F2_ZERO_DEP_MODULES, production);
+    }
+
+    // ------------------------------------------------------------ F3 依赖方向
+
+    private static final ArchRule F3_NO_UPWARD_DEPENDENCY_FROM_CONFIG =
+            noClasses().that().resideInAnyPackage("com.oncall.config..")
+                    .should().dependOnClassesThat()
+                    .resideInAnyPackage("com.oncall.toolgateway..", "com.oncall.ontology..")
+                    .because("依赖方向必须是 config-admin -> config，"
+                            + "配置层反向依赖上层会形成环，且让配置层无法独立测试")
+                    .as("F3 配置层不得反向依赖上层模块");
+
+    @Test
+    @DisplayName("F3 通过：配置层不反向依赖 tool-gateway / ontology")
+    void f3ConfigDoesNotDependUpward() {
+        assertRulePasses(F3_NO_UPWARD_DEPENDENCY_FROM_CONFIG, production);
+    }
+
+    private static final ArchRule F4_DOMAIN_IS_LEAF =
+            noClasses().that().resideInAnyPackage("com.oncall.domain..")
+                    .should().dependOnClassesThat()
+                    .resideInAnyPackage("com.oncall.config..", "com.oncall.toolgateway..",
+                            "com.oncall.ontology..")
+                    .because("领域层是叶子：被所有人依赖，不依赖任何人。"
+                            + "已核实的依赖方向为 config-admin -> config、"
+                            + "tool-gateway -> domain、ontology -> domain")
+                    .as("F4 领域层不得依赖其他模块");
+
+    @Test
+    @DisplayName("F4 通过：领域层是依赖图的叶子")
+    void f4DomainIsLeaf() {
+        assertRulePasses(F4_DOMAIN_IS_LEAF, production);
+    }
+
+    // ------------------------------------------------------------ 工具方法
+
+    /**
+     * 执行规则，失败时把异常信息截断后再抛出。
+     *
+     * <p><b>为什么要截断</b>：ArchUnit 会把每一条违规都列进 message，
+     * 一个失控的规则能产出几万字符。GitHub Actions 每一级注解上限 10 条，
+     * 超长输出会把真正的违规项从可读区域里挤出去——
+     * 这个坑在配置模块的 CI 排查里已经踩过一次。
+     */
+    private static void assertRulePasses(ArchRule rule, JavaClasses target) {
+        try {
+            rule.check(target);
+        } catch (AssertionError e) {
+            String msg = String.valueOf(e.getMessage());
+            if (msg.length() > 2000) {
+                msg = msg.substring(0, 2000) + "\n...（违规项过多，已截断；共 "
+                        + msg.length() + " 字符）";
+            }
+            fail(rule.getDescription() + " 失败：\n" + msg);
+        }
+    }
+}

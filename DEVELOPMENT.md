@@ -175,7 +175,60 @@ oncall-agent/
         └── GuardedToolCallbackTest.java  24 个用例：七道关卡 + 关卡顺序 + 三条安全性质
 ```
 
-**这三个模块都是纯逻辑，没有 Spring 上下文**——`oncall-domain` 与 `oncall-config` 完全零依赖，`oncall-tool-gateway` 只有 `GuardedToolCallback` 一个类碰 Spring AI。这样即使 Spring AI 坐标要调，90% 的代码不受影响。
+**这些模块都是纯逻辑，没有 Spring 上下文**——`oncall-domain`、`oncall-config`、
+`oncall-ontology` 完全零依赖（JDBC 只用 JDK 自带的 `javax.sql`，H2 只在测试作用域），
+`oncall-tool-gateway` 只有 `GuardedToolCallback` 一个类碰 Spring AI。
+这样即使 Spring AI 坐标要调，绝大部分代码不受影响。
+
+### 1.3 本轮新增：轻量本体 + 架构约束 + M2 建表
+
+```
+oncall-ontology/                         ✅ 零外部依赖（纯 Java 17）
+└── src/main/java/com/oncall/ontology/
+    ├── Criticality.java                 属性而非子类（OntoClean 的结论）
+    ├── ConceptKind.java                 5 类，每类对应一组 Competency Question
+    ├── OntoConcept.java                 SKOS 命名：pref/alt/hidden label + broader
+    ├── OntoRelation.java                带类型的边（6 种 predicate）
+    ├── OntologyStore.java               端口：概念层与关系层
+    ├── InMemoryOntologyStore.java       内存实现（返回值按 id 排序，见类注释）
+    ├── JdbcOntologyStore.java           只用 javax.sql，在真实 H2 上测过
+    ├── EntityLink.java                  RESOLVED / AMBIGUOUS / UNRESOLVED
+    ├── Ontology.java                    门面：有界遍历 + 实体链接
+    └── rule/                            4 条规则 + RuleEngine（刻意不用规则引擎）
+└── src/test/java/...                    3 个测试类，59 个用例
+
+oncall-archtest/                         ✅ 无生产代码，只有测试
+├── ArchitectureRuleTest.java            F1–F4 + F9，7 个用例
+└── fixture/UnguardedToolCallbackFixture.java   故意违规，用来证明 F9 会红
+```
+
+**本体不引入 OWL / 推理机 / SPARQL**，三个语义层面的理由（不是成本理由）见
+[本体论方法论评估.md](本体论方法论评估.md)：OWL 的开放世界假设与运维要的闭世界冲突；
+OWL 与 SWRL 都单调、无否定即失败，表达不了「除非…否则…」；
+形式本体要求领域十年尺度稳定，而服务拓扑每周变。
+
+| 组件 | 关键设计 |
+|------|---------|
+| `Criticality` | **属性不是子类**。「核心」是非刚性的，做成子类会导致服务升级要迁实例类型 |
+| `Ontology.traverse` | 跳数上限 `MAX_HOPS=3`，**调用方传再大的数也会被夹回来** |
+| `Ontology.link` | 多义时返回候选**而不是猜**。别名表给不了这个能力 |
+| `Ontology.isA` | 遇环终止，脏数据不能挂死请求线程 |
+| `JdbcOntologyStore` | upsert 先 UPDATE 再 INSERT，**不用方言语法**（H2 的 `MERGE` 与 PG 的 `ON CONFLICT` 不通用） |
+| `onto_concept_label` | 归一化标签表而非 `TEXT[]`：热路径是等值查询，且 `TEXT[]` 会让 H2 验证不可能 |
+| `RuleEngine` | 顺序执行，效果**取更严格的一档**（不是叠加也不是覆盖）；单条规则异常不连带其余约束失效 |
+
+**M2 建表**：`db/migration/` 从 1 个脚本增至 6 个，表从 2 张增至 **15 张**。
+两个数据库级不变量落到了约束上：
+
+| 约束 | 保证的不变量 |
+|------|-------------|
+| `uq_agent_step_idem UNIQUE (idempotency_key)` | I8 幂等。**多实例下应用层幂等会失效**，只有数据库约束是物理保证 |
+| `chk_approval_not_self CHECK (approver IS NULL OR approver <> requester)` | I3 不能复核自己。放应用层等于让人改一行代码就绕过 |
+
+> **⚠️ V2–V6 的 13 张表从未在任何数据库上执行过。**
+> 没有 PostgreSQL、没有 psql，测试作用域只有 H2，
+> 而 `PARTITION BY RANGE`（V3/V4）与 `vector(1024)` + HNSW（V5）H2 都不支持。
+> 详见 [5.数据库设计文档.md](5.数据库设计文档.md) §8.2 的风险清单。
 
 ---
 

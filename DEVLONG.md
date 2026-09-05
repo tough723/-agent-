@@ -14,7 +14,7 @@
 
 | # | 不变量 | 靠什么保证 |
 |---|-------|----------|
-| **I1** | 所有 AI 发起的写操作必须穿过 `GuardedToolCallback` | 代码结构 + ArchUnit 规则（F9，待实现） |
+| **I1** | 所有 AI 发起的写操作必须穿过 `GuardedToolCallback` | 代码结构 + ArchUnit 规则 F9（`oncall-archtest`，**已实现且自证会失败**） |
 | **I2** | 未注册的工具一律拒绝，且**不泄露其存在性** | `ToolPolicyEngine` 默认拒绝 + 关卡①在②之前 |
 | **I3** | 高危配置变更必须两个不同的人同意 | `ConfigAccessPolicy` + 待复核单 + "不能复核自己"断言 |
 | **I4** | `BACKEND_ONLY` 的键对外表现与"不存在"完全一致 | 一律 404，不是 403 |
@@ -81,7 +81,7 @@
 | `架构设计方案.md §6.4` "Prompt 工程迭代（面试亮点）" | 是 60%→95% 的话术，无版本机制 | 用 `PromptRegistry` 替代（未实现） |
 | `retrieval.top-n = 5` 仍在配置表里 | 与 `parent-top-n = 4` 语义重叠 | 属于**修改已冻结参数**，需评审签字后改 |
 | `chunking.parent-max-tokens` 未冻结 | 导致 `最大上下文 12000` 无法被强制执行 | 建议 1200，封顶后总上下文 9700 < 12000 |
-| ArchUnit 规则（F9）未实现 | 不变量 I1 目前靠自觉 | M2 或 M3 补上 |
+| ~~ArchUnit 规则（F9）未实现~~ | **已实现**（`oncall-archtest`） | 规则的表述从「禁止在网关外调 `ToolCallback.call`」改成「除 `GuardedToolCallback` 外不得实现 `ToolCallback`」，理由见 `ArchitectureRuleTest` 的类注释 |
 
 ---
 
@@ -203,7 +203,24 @@
 
 见 [DEVELOPMENT.md](DEVELOPMENT.md) 的 M2 起。当前建议顺序：
 
-1. **`McpToolRegistrar`** —— M1 最后一项，堵住不变量 I14
-2. **ArchUnit 规则（F9）** —— 让不变量 I1 从"自觉"变成"编译期强制"
-3. **M2 Flyway 建表** —— 特别是 `agent_step.idempotency_key` 的 UNIQUE（不变量 I8）
-4. **`StubChatModel` + L2 测试** —— 覆盖 AI 编排逻辑又能进 CI 的唯一一层
+1. **在 CI 里用真实 PostgreSQL 跑一遍 V1–V6** —— 见下方 ⚠️，这必须排在写业务代码之前
+2. **`McpToolRegistrar`** —— M1 最后一项，堵住不变量 I14
+3. **`StubChatModel` + L2 测试** —— 覆盖 AI 编排逻辑又能进 CI 的唯一一层
+
+> **⚠️ V2–V6 的 13 张表 DDL 已写入，但从未在任何数据库上执行过。**
+> 当前环境没有 PostgreSQL 也没有 psql，测试作用域只有 H2，
+> 而 V3/V4 的 `PARTITION BY RANGE`、V5 的 `vector(1024)` + HNSW 三样 H2 都不支持。
+> 语法错误、分区顺序、`COMMENT ON` 的列名拼写都还没有被任何东西验证过。
+> schema 属于「改不了要重来」的那一类，晚发现的代价是非线性的。
+
+**本轮已完成（原第 2、3 项）**：
+
+- **ArchUnit 规则 F1–F4 + F9**（`oncall-archtest`）—— 不变量 I1 从"自觉"变成编译期强制。
+  F9 的表述与文档里原先写的不一样，见 `ArchitectureRuleTest` 的类注释：
+  「禁止在网关外调 `ToolCallback.call`」在静态分析下不可判定，
+  能判定的是实现类的集合。
+- **M2 的 9 张表 DDL**（V2–V5）+ **轻量本体 4 张表**（V6），共 15 张。
+  两个数据库级不变量已落到约束上：`uq_agent_step_idem`（I8 幂等的物理保证）
+  与 `chk_approval_not_self`（I3 "不能复核自己"）。
+- **`oncall-ontology` 模块** —— 概念层 / 关系层 / 4 条规则（R1–R4），
+  有界遍历 + 实体链接，JDBC 实现在真实 H2 上测过。

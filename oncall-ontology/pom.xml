@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.oncall</groupId>
+    <artifactId>oncall-agent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>oncall-ontology</artifactId>
+  <name>oncall-ontology</name>
+
+  <!--
+    轻量本体：概念层 + 关系层 + 规则层。
+
+    刻意【不引入】OWL / 推理机 / SPARQL / SHACL。理由不是成本，是语义不匹配：
+      ① OWL 的开放世界假设与运维需要的闭世界冲突（影响面分析要「就这 5 个」，
+         OWA 只能给「未知」）；
+      ② OWL 与 SWRL 都单调、无否定即失败，无法表达「除非…否则…」这类默认规则；
+      ③ 形式本体要求领域十年尺度稳定，而服务拓扑每周变。
+    详细论证见《本体论方法论评估.md》。
+
+    但借用本体工程的两条方法：
+      - Competency Questions 界定范围（防止范围失控）
+      - OntoClean 检验分类（防止建模错误，criticality 就是这么从子类改成属性的）
+
+    与 oncall-domain / oncall-config 同一条架构约束：生产代码零外部依赖。
+    依赖 oncall-domain 只是为了 RiskLevel 的类型安全（domain 本身也是零依赖）。
+  -->
+
+  <dependencies>
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-domain</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!-- 仅测试作用域：JDBC 实现需要真实数据库验证 SQL，用假 Connection 测等于没测 -->
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <version>2.3.232</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

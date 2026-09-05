@@ -19,10 +19,10 @@
 | 项 | 值 |
 |----|-----|
 | 分支 | `arena/01a06d8c-agent`（**只在这个分支上工作**） |
-| 模块 | `oncall-domain`、`oncall-config`、`oncall-config-admin`、`oncall-tool-gateway` |
-| 测试 | 184 个用例 / 15 个测试类 |
+| 模块 | `oncall-domain`、`oncall-config`、`oncall-config-admin`、`oncall-tool-gateway`、`oncall-ontology`、`oncall-archtest`（仅测试） |
+| 测试 | 250 个用例 / 19 个测试类 |
 | 配置项 | 39 项（23 `RUNTIME_HOT` / 8 `REQUIRES_MIGRATION` / 8 `BACKEND_ONLY`） |
-| 数据库 | 11 张表，2 张已落地 |
+| 数据库 | 15 张表的 DDL 已写入；**V2–V6 的 13 张未在任何数据库上执行过** |
 | 阶段 | M1 / M1.5 完成，M2 起 |
 
 **这些数字会变。** 改完之后要同步 `DEVELOPMENT.md`，
