@@ -95,9 +95,22 @@
   </dependencyManagement>
 
   <dependencies>
+    <!-- junit-jupiter 是聚合件，理论上已传递 junit-jupiter-engine；
+         这里显式再声明引擎与 launcher，避免 surefire 因找不到 JUnit Platform
+         引擎而静默报 "No tests to run" 却依然构建成功。 -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-launcher</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>

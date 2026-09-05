@@ -40,6 +40,31 @@ jobs:
       - name: Build & test oncall-tool-gateway (依赖 Spring AI)
         run: mvn -B -pl oncall-tool-gateway -am test 2>&1 | tee /tmp/gateway.log
 
+      # 诊断：把关键事实作为 annotation 发出（这是从沙箱侧唯一能读到的 CI 输出通道）
+      - name: Diagnose test execution
+        if: always()
+        run: |
+          echo "===== surefire 实际使用的版本 ====="
+          mvn -B -q help:evaluate -Dexpression=maven.version -DforceStdout 2>/dev/null || true
+          mvn -B help:describe -Dplugin=org.apache.maven.plugins:maven-surefire-plugin 2>&1 \
+            | grep -Ei "^Name|^Version|^Goal" | head -5 || true
+          echo "===== 编译产物 ====="
+          find . -path '*/target/classes/*.class' | head -5
+          echo "----- 测试类编译产物 -----"
+          find . -path '*/target/test-classes/*.class' | head -10
+          echo "===== surefire 报告目录 ====="
+          find . -type d -name surefire-reports | head -5
+          echo "===== domain.log 中与 surefire/test 相关的行 ====="
+          grep -Ei "surefire|Tests run|No tests|Skipping|test-classes" /tmp/domain.log 2>/dev/null | head -25 || true
+          echo "===== gateway.log 中与 surefire/test 相关的行 ====="
+          grep -Ei "surefire|Tests run|No tests|Skipping|test-classes" /tmp/gateway.log 2>/dev/null | head -25 || true
+          # 以 annotation 形式发出，便于从 API 侧读取
+          nclass=$(find . -path '*/target/test-classes/*.class' | wc -l)
+          nrep=$(find . -path '*/surefire-reports/*.txt' | wc -l)
+          echo "::notice::诊断 test-classes 编译数=$nclass surefire报告数=$nrep"
+          grep -Ei "surefire.*:[0-9]|Tests run|No tests to run" /tmp/domain.log 2>/dev/null | head -6 \
+            | sed 's/^/::notice::domain /' || true
+
       # 硬保险：surefire 2.x 遇到 JUnit 5 会静默跑 0 个测试并报成功。
       # 只有「测试数 > 0 且失败数 = 0」才算通过，不接受空跑。
       - name: Assert tests actually ran
