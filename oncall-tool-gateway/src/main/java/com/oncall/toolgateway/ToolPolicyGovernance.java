@@ -1,4 +1,4 @@
-package com.oncall.toolgateway.governance;
+package com.oncall.toolgateway;
 
 import com.oncall.domain.governance.Operator;
 import com.oncall.domain.governance.ReviewOutcome;
@@ -6,7 +6,12 @@ import com.oncall.domain.governance.ReviewRequest;
 import com.oncall.domain.governance.ReviewVerdict;
 import com.oncall.domain.governance.TwoPersonReview;
 import com.oncall.domain.tool.ToolPolicy;
-import com.oncall.toolgateway.ToolPolicyEngine;
+import com.oncall.toolgateway.governance.GovernanceException;
+import com.oncall.toolgateway.governance.PolicyRiskDelta;
+import com.oncall.toolgateway.governance.ToolPolicyChange;
+import com.oncall.toolgateway.governance.ToolPolicyChangeAudit;
+import com.oncall.toolgateway.governance.ToolPolicyChangeTicket;
+import com.oncall.toolgateway.governance.ToolPolicyChangeTicketStore;
 
 import java.util.List;
 import java.util.Objects;
@@ -49,14 +54,22 @@ import java.util.function.LongSupplier;
  *   <li><b>不提供绕过复核的入口</b>。没有 force 参数。</li>
  * </ul>
  *
- * <h2>已知的、还没堵上的一半</h2>
+ * <h2>为什么这个类与 {@code ToolPolicyEngine} 同包，而不在 {@code governance} 子包</h2>
  *
- * {@code ToolPolicyEngine.register()} / {@code revoke()} <b>仍然是 public</b>。
- * 也就是说这个治理层是"应当走的路"，还不是"唯一能走的路"——
- * 拿到引擎引用的代码仍然可以直接改白名单。要真正封死，
- * 得把这两个方法降为包级可见，而 {@code McpToolRegistrarTest} 在
- * {@code com.oncall.toolgateway.mcp} 子包里用了它们，需要一并调整。
- * 这一条已登记为后续项，不在本轮夹带：<b>能说清"还差什么"比假装已经封死重要</b>。
+ * {@code ToolPolicyEngine.register()} / {@code revoke()} 是<b>包级可见</b>的。
+ * 这是刻意的：白名单是整个安全模型的事实来源，如果那两个方法是 public，
+ * 本类就只是"应当走的路"而不是"唯一能走的路"——任何拿到引擎引用的代码
+ * 都能绕过双人复核与变更审计直接改白名单，而且<b>不会有任何报错</b>，
+ * 它看起来就是一次正常的方法调用。
+ *
+ * <p>Java 的包级可见是这里唯一真正靠得住的手段：ArchUnit 规则可以被削弱，
+ * 编译器的可见性检查不能。所以这个类必须与引擎同包——
+ * 它是唯一有权改白名单的生产类。
+ * 纯数据类型、端口与内存实现留在 {@code governance} 子包，它们不碰引擎。
+ *
+ * <p><b>启动时的初始加载走 {@code ToolPolicyEngine} 的构造器</b>：
+ * 从配置/DB 读策略灌进来是初始化而不是变更，不该要求两个人同意。
+ * 运行期变更才必须过治理。
  */
 public class ToolPolicyGovernance {
 

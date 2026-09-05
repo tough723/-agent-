@@ -601,6 +601,76 @@ run `33986494127` 只红了一条：`requesterCanReject` 期望 `REJECTED`、实
 
 并补了一条专门断言：整段流程不推进时钟，三条审计事件仍必须按发生顺序排列。
 
+### 1.8 白名单变更入口封死（轨道 A 第三步）
+
+```
+oncall-tool-gateway/src/main/java/com/oncall/toolgateway/
+├── ToolPolicyEngine.java        register() / revoke() 降为**包级可见**
+└── ToolPolicyGovernance.java    从 governance 子包**移上来**，与引擎同包
+
+oncall-tool-gateway/src/test/java/com/oncall/toolgateway/
+├── ToolPolicyEngineVisibilityTest.java   6 个用例，守住可见性
+├── ToolPolicyGovernanceTest.java         从 governance 子包移上来（25 个用例）
+└── mcp/McpToolRegistrarTest.java         13 处 register 改为构造器灌入
+```
+
+#### 为什么这一步要在接入点（A3）之前做
+
+上一轮明确登记过：`register()` / `revoke()` 仍是 public，
+所以治理层只是「应当走的路」，不是「唯一能走的路」。
+
+**如果先做 REST 接入点，会得到一个看起来完备、实际可以被无声绕过的治理**：
+绕过不报错、不留审计、在 review 里就是一次普通的方法调用。
+先把门焊死，接入点才有意义。
+
+#### 用编译器的可见性，而不是用规则
+
+| 手段 | 强度 | 能被绕过吗 |
+|------|------|-----------|
+| 文档写"请走治理层" | 最弱 | 无声绕过 |
+| ArchUnit 规则 | 中 | 规则可以被削弱，而且**造不出违规样本**——方法一旦包级可见，跨包调用根本编译不过，没法写 fixture 证明规则会红 |
+| **包级可见** | 最强 | 编译器强制，改不动 |
+
+选包级可见的代价是 `ToolPolicyGovernance` 必须与 `ToolPolicyEngine` 同包。
+这是**刻意的**：唯一有权改白名单的生产类，就住在引擎旁边。
+纯数据类型、端口、内存实现留在 `governance` 子包——它们不碰引擎。
+
+#### 启动加载不受影响
+
+`ToolPolicyEngine` 的**构造器仍然是 public**。从配置/DB 读策略灌进来是
+**初始化**而不是变更，它不该要求两个人同意。
+封的是运行期变更，不是启动装配，也不是读（`resolve`/`find`/`size`/`mcpServers` 都还是 public）。
+
+#### 可见性由一条非空自证的断言守着
+
+可见性是**会被无意放宽的**：有人为了让某个测试能跑，随手加个 `public`，
+编译通过、测试全绿，那一行 diff 混在别的改动里没人注意。
+`ToolPolicyEngineVisibilityTest` 读运行期真实的 `Modifier`：
+谁放宽，它当场就红——**不需要额外的违规样本**，这正是它比 ArchUnit 规则更适合这个场景的原因。
+
+它同时也钉住了「不该被封的部分」：构造器仍是 public、读方法仍是 public。
+只断言"写被封了"是不够的，那测不出"读也被一起封死"这种过度收紧。
+
+#### `McpToolRegistrarTest` 的 13 处改动
+
+`policyEngine.register(X)` → `givenPolicies(X)`（重建引擎 + 治理 + 纳管器）。
+这**顺带让测试走了生产的路径**：策略从构造器灌进去，正是启动时从配置/DB 加载的方式。
+唯一一处 `revoke` 改为走 `governance.propose(revoke(...))`——
+撤销是收紧方向，治理层直接放行，不需要第二个人。
+
+`ToolPolicyGovernanceTest` 里仍然直接调 `register()`（它与引擎同包，可以）。
+这**不是测试走后门而是必须能模拟**：`STALE` 那道检查防的正是"绕过治理的直接改动"，
+只能通过治理路径构造场景的话，就测不到它防的东西。
+
+#### 本轮改动的预期数字（CI 跑完前不写成"已验证"）
+
+| 指标 | `a015924` 实测 | 本轮预测 | 依据 |
+|------|---------------|---------|------|
+| 测试类 / 报告文件 | 25 | **26** | 新增 `ToolPolicyEngineVisibilityTest` |
+| 测试用例 | 365 | **371** | +6，逐文件 `@Test` 清点 |
+| `oncall-tool-gateway` | 29 类 / 146 用例 | **29 类 / 152 用例** | 类数不变（移动不新增），+6 用例 |
+| 生产类合计 | 91 | **91** | 只移动，不新增 |
+
 ---
 
 ## 二、下一步：按模块推进（M1 → M7）

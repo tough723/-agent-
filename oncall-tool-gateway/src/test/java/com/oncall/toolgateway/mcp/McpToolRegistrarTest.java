@@ -14,6 +14,11 @@ import com.oncall.toolgateway.KillSwitch;
 import com.oncall.toolgateway.RunMode;
 import com.oncall.toolgateway.Sha256IdempotencyStore;
 import com.oncall.toolgateway.ToolPolicyEngine;
+import com.oncall.toolgateway.ToolPolicyGovernance;
+import com.oncall.toolgateway.governance.InMemoryToolPolicyChangeAudit;
+import com.oncall.toolgateway.governance.InMemoryToolPolicyChangeTicketStore;
+import com.oncall.toolgateway.governance.ToolPolicyChange;
+import com.oncall.domain.governance.Operator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -44,19 +49,38 @@ class McpToolRegistrarTest {
     private ToolPolicyEngine policyEngine;
     private KillSwitch killSwitch;
     private InMemoryToolAuditLog audit;
+    private InMemoryToolExecutionLedger ledger;
+    private ToolPolicyGovernance governance;
     private McpToolRegistrar registrar;
 
     @BeforeEach
     void setUp() {
         catalog = new StaticMcpToolCatalog();
-        policyEngine = new ToolPolicyEngine(List.of());
         killSwitch = new KillSwitch();
         audit = new InMemoryToolAuditLog();
         // 账本必须是同一个实例：guardedTools() 每次返回新的 GuardedToolCallback，
         // 但幂等状态必须跨实例共享，否则重放判定就失效了。
+        ledger = new InMemoryToolExecutionLedger();
+        givenPolicies();
+    }
+
+    /**
+     * 用给定策略重建引擎、治理与纳管器。
+     *
+     * <p><b>为什么不再直接调 {@code givenPolicies()}</b>：
+     * 那两个方法已经降为包级可见，运行期改白名单只能通过
+     * {@link ToolPolicyGovernance}（见 {@code ToolPolicyEngine.register} 的注释）。
+     * 测试因此走生产同样的路：<b>策略从构造器灌进去</b>——
+     * 那正是启动时从配置/DB 加载策略的路径，初始化不是变更，不需要两个人。
+     */
+    private void givenPolicies(ToolPolicy... policies) {
+        policyEngine = new ToolPolicyEngine(List.of(policies));
+        governance = new ToolPolicyGovernance(policyEngine,
+                new InMemoryToolPolicyChangeTicketStore(),
+                new InMemoryToolPolicyChangeAudit());
         registrar = new McpToolRegistrar(catalog, policyEngine, killSwitch,
                 autoApprove(), audit, new Sha256IdempotencyStore(),
-                new InMemoryToolExecutionLedger(), ArgClamper.NOOP);
+                ledger, ArgClamper.NOOP);
     }
 
     private static ToolPolicy mcpPolicy(String namespacedName, RiskLevel risk) {
@@ -73,7 +97,7 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("已纳管的工具被接受，且对外名字带 mcp:<server>: 前缀")
     void registeredToolIsAcceptedWithPrefix() {
-        policyEngine.register(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
+        givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         catalog.withServer(SERVER, StubToolCallback.named(RAW));
 
         McpRegistrationResult result = registrar.inspect(SERVER);
@@ -102,7 +126,7 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("只注册了原始名的策略不能给 MCP 工具背书 —— 前缀是安全边界不是命名习惯")
     void rawNamePolicyDoesNotAuthorizeMcpTool() {
-        policyEngine.register(new ToolPolicy(RAW, ToolSource.MCP, RiskLevel.READ_ONLY,
+        givenPolicies(new ToolPolicy(RAW, ToolSource.MCP, RiskLevel.READ_ONLY,
                 false, Duration.ZERO, false, null));
         catalog.withServer(SERVER, StubToolCallback.named(RAW));
 
@@ -112,7 +136,7 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("LOCAL 策略不能给 MCP 工具背书 —— 否则本地注册同名策略就是绕过路径")
     void localPolicyDoesNotAuthorizeMcpTool() {
-        policyEngine.register(new ToolPolicy(NAMESPACED, ToolSource.LOCAL, RiskLevel.READ_ONLY,
+        givenPolicies(new ToolPolicy(NAMESPACED, ToolSource.LOCAL, RiskLevel.READ_ONLY,
                 false, Duration.ZERO, false, null));
         catalog.withServer(SERVER, StubToolCallback.named(RAW));
 
@@ -125,7 +149,7 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("两个 server 的同名工具是两个独立的东西，纳管一个不等于纳管另一个")
     void sameToolNameOnDifferentServersIsNotCrossAuthorized() {
-        policyEngine.register(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
+        givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         catalog.withServer(SERVER, StubToolCallback.named(RAW))
                 .withServer("billing", StubToolCallback.named(RAW));
 
@@ -167,7 +191,7 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("同一 server 内重名，只有第一个被接受")
     void duplicateToolNameWithinServerIsRejected() {
-        policyEngine.register(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
+        givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         catalog.withServer(SERVER, StubToolCallback.named(RAW), StubToolCallback.named(RAW));
 
         McpRegistrationResult result = registrar.inspect(SERVER);
@@ -217,7 +241,7 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("模型看到的名字必须是带前缀的名字，原始名不得泄露")
     void rawNameNeverLeaksToTheModel() {
-        policyEngine.register(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
+        givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         catalog.withServer(SERVER, StubToolCallback.named(RAW));
 
         List<ToolCallback> tools = registrar.guardedTools(SERVER, "run-1", 1);
@@ -230,7 +254,7 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("改名只改名字：description 与 inputSchema 必须原样保留")
     void renamingPreservesDescriptionAndSchema() {
-        policyEngine.register(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
+        givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         catalog.withServer(SERVER, StubToolCallback.named(RAW));
 
         ToolCallback guarded = registrar.guardedTools(SERVER, "run-1", 1).get(0);
@@ -242,7 +266,7 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("策略判定用的是带前缀的名字 —— 这条失败说明改名没生效")
     void policyIsResolvedByNamespacedName() {
-        policyEngine.register(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
+        givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         StubToolCallback stub = StubToolCallback.named(RAW);
         catalog.withServer(SERVER, stub);
 
@@ -258,11 +282,14 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("撤掉带前缀的策略后立刻拒绝 —— 纳管是唯一授权来源")
     void revokingPolicyImmediatelyDenies() {
-        policyEngine.register(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
+        givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         catalog.withServer(SERVER, StubToolCallback.named(RAW));
         ToolCallback guarded = registrar.guardedTools(SERVER, "run-1", 1).get(0);
 
-        policyEngine.revoke(NAMESPACED);
+        // 撤销是收紧方向 ⇒ 治理层直接放行，不需要第二个人。
+        // 走治理而不是直接调 revoke：那条路已经被可见性封死了。
+        governance.propose(ToolPolicyChange.revoke(NAMESPACED),
+                new Operator("alice", Operator.Role.EDITOR), "工具下线");
 
         assertThatThrownBy(() -> guarded.call("{}"))
                 .isInstanceOf(ToolDeniedException.class)
@@ -272,7 +299,7 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("kill switch 对 MCP 工具同样生效 —— 纳管不是豁免")
     void killSwitchAppliesToMcpTools() {
-        policyEngine.register(mcpPolicy("mcp:cmdb:scale", RiskLevel.LOW));
+        givenPolicies(mcpPolicy("mcp:cmdb:scale", RiskLevel.LOW));
         catalog.withServer(SERVER, StubToolCallback.named("scale"));
         ToolCallback guarded = registrar.guardedTools(SERVER, "run-1", 1).get(0);
 
@@ -284,7 +311,7 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("产出的回调必须是 GuardedToolCallback —— 与 ArchUnit F9 是同一件事的运行期版本")
     void guardedToolsAreActuallyGuarded() {
-        policyEngine.register(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
+        givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         catalog.withServer(SERVER, StubToolCallback.named(RAW));
 
         for (ToolCallback t : registrar.guardedTools(SERVER, "run-1", 1)) {
@@ -304,7 +331,7 @@ class McpToolRegistrarTest {
     @Test
     @DisplayName("runId 与 step 进幂等键：同一工具在不同步序号下是两次执行")
     void runAndStepArePartOfIdempotency() {
-        policyEngine.register(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
+        givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         StubToolCallback stub = StubToolCallback.named(RAW);
         catalog.withServer(SERVER, stub);
 

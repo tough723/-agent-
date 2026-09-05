@@ -211,7 +211,7 @@
 | **知识库清单** | 不知道有多少文档、什么格式、谁维护 ⇒ 无法估算索引成本与冷启动周期 | 找知识库的实际负责人盘点 |
 | **CMDB 的告警→服务映射** | 没有映射就无法自动定位影响面，也无法 @ 对人 | 确认 CMDB 是否有这个关系，覆盖率多少 |
 | **成本模型的真实聚合率** | 现在的 15% 是**假设值**，成本承诺全是空的 | W3 用真实数据修正 |
-| **工具白名单（`ToolPolicy`）没有变更治理路径**（🟡 进行中） | 白名单是整个安全模型的事实来源——加一条 MCP 工具策略就等于放行一个远端工具。但配置治理那套（可见性分级 / 双人复核 / 待复核单 / 审计）只覆盖 `OnCallConfigRegistry`，**不覆盖 `ToolPolicyEngine`**。现在加策略是改代码或改 DB，没有第二人复核，也没有"谁在什么时候放行了什么"的可查记录 | 把工具策略纳入与配置同等的治理：变更走待复核单 + 双人 + 审计。这一条的优先级高于任何新功能。**A1 已完成**：双人复核的决策核心（`TwoPersonReview` + `Operator`）已从 `oncall-config-admin` 下沉到 `oncall-domain`，两侧共用一份规则（§1.6）。**A2 已完成**：`ToolPolicyGovernance` 落地，工具策略变更走待复核单 + 双人 + 审计，判据是 `PolicyRiskDelta` 算出的风险方向（§1.7）。**剩下的**是 A3 接入点，以及一个明确登记的缺口：`ToolPolicyEngine.register()/revoke()` 仍是 public，治理层是「应当走的路」而不是「唯一能走的路」 |
+| **工具白名单（`ToolPolicy`）没有变更治理路径**（🟡 进行中） | 白名单是整个安全模型的事实来源——加一条 MCP 工具策略就等于放行一个远端工具。但配置治理那套（可见性分级 / 双人复核 / 待复核单 / 审计）只覆盖 `OnCallConfigRegistry`，**不覆盖 `ToolPolicyEngine`**。现在加策略是改代码或改 DB，没有第二人复核，也没有"谁在什么时候放行了什么"的可查记录 | 把工具策略纳入与配置同等的治理：变更走待复核单 + 双人 + 审计。这一条的优先级高于任何新功能。**A1 已完成**：双人复核的决策核心（`TwoPersonReview` + `Operator`）已从 `oncall-config-admin` 下沉到 `oncall-domain`，两侧共用一份规则（§1.6）。**A2 已完成**：`ToolPolicyGovernance` 落地，工具策略变更走待复核单 + 双人 + 审计，判据是 `PolicyRiskDelta` 算出的风险方向（§1.7）。**A4 已完成**：`register()/revoke()` 降为包级可见，治理层成为唯一入口（§1.8）。**剩下的**是 A3 REST 接入点 |
 | **`ToolAuditLog` 的方法签名喂不满 `tool_audit_log` 的必填列** | V2 的 `tool_audit_log` 要求 `trace_id` / `tool_source` / `risk_level` / `args_masked` / `gate_outcome` 全部 `NOT NULL`，而 `recordSuccess(idempotencyKey, toolName, args, result)` **一个都给不出**：没有 trace，分不清 LOCAL 与 MCP，没有风险级，`gate_outcome` 只能靠方法名反推（`recordClamped` 与 `recordApproval` 之间还分不清 `PASSED` / `CLAMPED`），`args` 还是未脱敏原文而列名叫 `args_masked`。⇒ **`JdbcToolAuditLog` 现在写不出来**；硬写只能往必填列塞假值，而一张字段造假的审计表比没有审计更糟 | 把审计上下文（trace / source / riskLevel / gateOutcome / 脱敏后的参数）作为显式参数传进来，而不是让实现去猜。会动到 `GuardedToolCallback` 全部审计调用点，属独立一轮 |
 
 > 第四条是这么被发现的：我本来加了一个 `mcp.allowed-servers` 配置项并把它放进
@@ -267,9 +267,12 @@
 
    **A3 待做**：REST 接入点。`GovernanceException` 已经携带 `ReviewVerdict`，
    就是为了让接入层能正确映射状态码。
-   **A4 待做（已登记的缺口）**：把 `ToolPolicyEngine.register()/revoke()`
-   降为包级可见，让治理层成为唯一入口。
-   现在它们仍是 public，`McpToolRegistrarTest` 有 13 处在用，需要一并调整。
+   **A4 已完成**：`register()/revoke()` 降为**包级可见**，
+   `ToolPolicyGovernance` 移到与引擎同包（它是唯一有权改白名单的生产类）。
+   用编译器的可见性而不是 ArchUnit 规则——规则可以被削弱，
+   而且方法一旦包级可见就造不出违规样本，没法证明规则会红。
+   可见性由 `ToolPolicyEngineVisibilityTest` 守住（6 个用例，非空自证）。
+   构造器与读方法仍是 public：封的是运行期变更，不是启动装配也不是读。
 
 ### 轨道 B：AI 那一半的第一块（当前 6 个 AI 组件的代码文件数仍是 0）
 
@@ -303,6 +306,9 @@
   > 容器能让人知道没有风险。这个 job 现在是硬失败。
 - **`oncall-ontology` 模块** —— 概念层 / 关系层 / 4 条规则（R1–R4），
   有界遍历 + 实体链接，JDBC 实现在真实 H2 上测过。
+- **白名单变更入口封死** —— `ToolPolicyEngine.register()/revoke()` 降为包级可见，
+  `ToolPolicyGovernance` 与引擎同包，是**唯一**有权改白名单的生产类。
+  用编译器强制而不是规则，见 [DEVELOPMENT.md](DEVELOPMENT.md) §1.8。
 - **`ToolPolicyGovernance`（`oncall-tool-gateway`）** —— 工具白名单变更
   终于有了双人复核与「谁在什么时候放行了什么」的审计。
   判据是风险方向而不是改动本身，见 [DEVELOPMENT.md](DEVELOPMENT.md) §1.7。

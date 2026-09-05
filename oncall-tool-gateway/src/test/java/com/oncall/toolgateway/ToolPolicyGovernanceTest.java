@@ -1,11 +1,17 @@
-package com.oncall.toolgateway.governance;
+package com.oncall.toolgateway;
 
 import com.oncall.domain.governance.Operator;
 import com.oncall.domain.governance.ReviewVerdict;
 import com.oncall.domain.tool.RiskLevel;
 import com.oncall.domain.tool.ToolPolicy;
 import com.oncall.domain.tool.ToolSource;
-import com.oncall.toolgateway.ToolPolicyEngine;
+import com.oncall.toolgateway.governance.GovernanceException;
+import com.oncall.toolgateway.governance.InMemoryToolPolicyChangeAudit;
+import com.oncall.toolgateway.governance.InMemoryToolPolicyChangeTicketStore;
+import com.oncall.toolgateway.governance.PolicyRiskDelta;
+import com.oncall.toolgateway.governance.ToolPolicyChange;
+import com.oncall.toolgateway.governance.ToolPolicyChangeAudit;
+import com.oncall.toolgateway.governance.ToolPolicyChangeTicket;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -26,6 +32,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p><b>判定规则本身不在这里测</b>——它在 {@code TwoPersonReviewTest} 里，
  * 与配置侧共用同一份。这里测的是接线：什么时候生成单子、
  * 什么时候直接生效、单子什么时候被清掉、审计里留下了什么。
+ *
+ * <p><b>这个测试刻意与 {@code ToolPolicyEngine} 同包</b>，因此它能直接调
+ * 包级可见的 {@code register()} 来模拟"绕过治理的直接改动"。
+ * 这不是测试走了后门，而是<b>必须</b>能模拟：{@code STALE} 那道检查
+ * 防的正是这种改动，只能通过治理路径构造场景的话，就测不到它防的东西。
+ * 绕过路径本身在生产代码里已经被可见性封死，
+ * 由 {@code ToolPolicyEngineVisibilityTest} 守着。
  */
 class ToolPolicyGovernanceTest {
 

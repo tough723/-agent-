@@ -56,11 +56,33 @@ public class ToolPolicyEngine {
         return Optional.ofNullable(allowList.get(toolName));
     }
 
-    public void register(ToolPolicy policy) {
+    /**
+     * 写入一条策略。
+     *
+     * <p><b>刻意是包级可见，不是 public。</b>
+     *
+     * <p>白名单是整个安全模型的事实来源——加一条策略就等于放行一个工具
+     * （MCP 工具还是远端实现）。如果这两个方法是 public，那么
+     * {@link ToolPolicyGovernance} 只是"应当走的路"，而不是"唯一能走的路"：
+     * 任何拿到引擎引用的代码都能绕过双人复核与变更审计直接改白名单，
+     * 而那种绕过<b>不会有任何报错</b>——它看起来就是一次正常的方法调用。
+     *
+     * <p>Java 的包级可见是这里唯一真正靠得住的手段：
+     * ArchUnit 规则可以被削弱，编译器的可见性检查不能。
+     * {@code ToolPolicyGovernance} 因此与本类同包（见它的类注释）。
+     *
+     * <p><b>启动时的初始加载走构造器，不走这里</b>：从配置/DB 读策略灌进来
+     * 是初始化而不是变更，它不该要求两个人同意。运行期变更才必须过治理。
+     *
+     * <p>可见性由 {@code ToolPolicyEngineVisibilityTest} 用反射断言守着——
+     * 那条测试非空自证：谁把可见性放宽，它当场就红。
+     */
+    void register(ToolPolicy policy) {
         allowList.put(policy.toolName(), policy);
     }
 
-    public void revoke(String toolName) {
+    /** 移除一条策略（回到默认拒绝）。包级可见，理由同 {@link #register}。 */
+    void revoke(String toolName) {
         allowList.remove(toolName);
     }
 
