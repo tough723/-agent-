@@ -24,6 +24,7 @@ public final class OnCallConfigKeys {
     public static final String GROUP_TICKET = "ticket";
     public static final String GROUP_ALERT = "alert";
     public static final String GROUP_AUTONOMY = "autonomy";
+    public static final String GROUP_MCP = "mcp";
     public static final String GROUP_FALLBACK = "fallback";
 
     // ---- 检索 ----
@@ -77,6 +78,16 @@ public final class OnCallConfigKeys {
     // ---- 放权 ----
     public static final String AUTONOMY_LEVEL = "autonomy.level";
     public static final String AUTONOMY_KILL_SWITCH_MODE = "autonomy.kill-switch-mode";
+
+    // ---- MCP 工具纳管 ----
+    //
+    // 刻意【没有】mcp.tool-name-prefix 这个键：
+    // 前缀格式 mcp:<server>:<tool> 是安全边界的一部分（它让"哪个 server 的哪个工具"
+    // 可寻址），做成可配置就等于允许有人把两个 server 的工具名空间合并，
+    // 从而用 A 的纳管结果授权 B 的工具。这类东西属于不变量，不属于配置。
+    public static final String MCP_TOOLCALLBACK_ENABLED = "mcp.toolcallback-enabled";
+    public static final String MCP_ALLOWED_SERVERS = "mcp.allowed-servers";
+    public static final String MCP_DISCOVERY_REFRESH_SECONDS = "mcp.discovery-refresh-seconds";
 
     // ---- 兜底（按架构约束仅后端可见）----
     public static final String FALLBACK_RULE_BASED_ENABLED = "fallback.rule-based.enabled";

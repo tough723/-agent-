@@ -51,20 +51,27 @@ class ConfigSchemaExporterTest {
     @DisplayName("BACKEND_ONLY 的键名不出现在导出内容里——连键的存在都不该泄露给前端")
     void backendOnlyKeysNeverLeak() {
         String json = exporter.exportForUi();
-        List<String> mustNotAppear = List.of(
-                OnCallConfigKeys.FALLBACK_RULE_BASED_ENABLED,
-                OnCallConfigKeys.FALLBACK_EMBEDDING_DEGRADE_TO_BM25,
-                OnCallConfigKeys.FALLBACK_RERANKER_DEGRADE_TO_ORIGINAL_ORDER,
-                OnCallConfigKeys.FALLBACK_MODEL_FAILOVER_CHAIN,
-                OnCallConfigKeys.FALLBACK_INJECTION_BLOCK_WRITE,
-                OnCallConfigKeys.VECTOR_DIMENSION,
-                OnCallConfigKeys.VECTOR_DISTANCE_TYPE,
-                OnCallConfigKeys.VECTOR_INDEX_TYPE
-        );
+        // 从注册表推导，而不是手写清单：手写清单会漂移。
+        // 曾经这里就是手写的 8 个键，新增第 9 个 BACKEND_ONLY 项时没人想起来加，
+        // 于是新键是否泄露根本没人守。
+        List<String> mustNotAppear = OnCallConfigRegistry.create().all().stream()
+                .filter(s -> s.tier() == ConfigTier.BACKEND_ONLY)
+                .map(ConfigSpec::key)
+                .toList();
+        assertThat(mustNotAppear).isNotEmpty();
         for (String key : mustNotAppear) {
             assertThat(json).as("后端专属配置泄露到前端 schema：%s", key).doesNotContain(key);
         }
         assertThat(json).doesNotContain("BACKEND_ONLY");
+    }
+
+    @Test
+    @DisplayName("MCP 自动注册开关不得出现在前端 schema —— 它是关掉整个工具网关的按钮")
+    void mcpAutoRegistrationSwitchNeverReachesTheUi() {
+        assertThat(exporter.exportForUi())
+                .doesNotContain(OnCallConfigKeys.MCP_TOOLCALLBACK_ENABLED);
+        assertThat(exporter.exportedKeys())
+                .doesNotContainKey(OnCallConfigKeys.MCP_TOOLCALLBACK_ENABLED);
     }
 
     @Test

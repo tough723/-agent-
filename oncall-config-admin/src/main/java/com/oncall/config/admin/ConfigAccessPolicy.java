@@ -40,14 +40,23 @@ public final class ConfigAccessPolicy {
      *       表现为"回答变差"而不是报错，最难被发现</li>
      *   <li>{@code agent.max-steps} —— 调大等于放开成本与失控半径</li>
      *   <li>{@code alert.storm-threshold-per-minute} —— 调大会让真实告警风暴被判为正常</li>
+     *   <li>{@code mcp.allowed-servers} —— 加一个 server 等于把一批远端工具接进攻击面。
+     *       MCP 工具是运行期发现的、打不了注解，纳管白名单是唯一约束，
+     *       而"能连哪些 server"决定了白名单要覆盖多大范围</li>
      * </ul>
+     *
+     * <p>注意 {@code mcp.toolcallback-enabled} <b>不在</b>这份清单里——
+     * 它是 {@code BACKEND_ONLY}，对前端根本不存在（404 而不是 403），
+     * 比"需要两人复核"更强。它对应框架那个默认为 true 的自动注册开关，
+     * 打开它等于关掉整个工具网关，不该有任何 UI 入口。
      */
     public static final Set<String> HIGH_RISK_KEYS = Set.of(
             OnCallConfigKeys.AUTONOMY_LEVEL,
             OnCallConfigKeys.AUTONOMY_KILL_SWITCH_MODE,
             OnCallConfigKeys.RETRIEVAL_RERANK_ENABLED,
             OnCallConfigKeys.AGENT_MAX_STEPS,
-            OnCallConfigKeys.ALERT_STORM_THRESHOLD_PER_MINUTE
+            OnCallConfigKeys.ALERT_STORM_THRESHOLD_PER_MINUTE,
+            OnCallConfigKeys.MCP_ALLOWED_SERVERS
     );
 
     /** 待复核变更的有效期。过期后必须重新发起，理由见 {@link PendingChange}。 */

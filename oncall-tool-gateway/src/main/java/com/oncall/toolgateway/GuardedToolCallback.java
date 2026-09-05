@@ -39,6 +39,7 @@ public class GuardedToolCallback implements ToolCallback {
     private final ArgClamper argClamper;
     private final String runId;
     private final int step;
+    private final String toolNameOverride;
 
     public GuardedToolCallback(ToolCallback delegate,
                               ToolPolicyEngine policyEngine,
@@ -49,6 +50,26 @@ public class GuardedToolCallback implements ToolCallback {
                               ArgClamper argClamper,
                               String runId,
                               int step) {
+        this(delegate, policyEngine, killSwitch, approvalGate, auditLog,
+                idempotencyStore, argClamper, runId, step, null);
+    }
+
+    /**
+     * @param toolNameOverride 对外与对策略统一使用的工具名；{@code null} 表示沿用
+     *                         delegate 自己报的名字。<b>唯一用途是 MCP 工具加
+     *                         {@code mcp:<server>:} 前缀</b>，见
+     *                         {@code com.oncall.toolgateway.mcp.McpToolRegistrar}。
+     */
+    public GuardedToolCallback(ToolCallback delegate,
+                              ToolPolicyEngine policyEngine,
+                              KillSwitch killSwitch,
+                              ApprovalGate approvalGate,
+                              ToolAuditLog auditLog,
+                              IdempotencyStore idempotencyStore,
+                              ArgClamper argClamper,
+                              String runId,
+                              int step,
+                              String toolNameOverride) {
         this.delegate = delegate;
         this.policyEngine = policyEngine;
         this.killSwitch = killSwitch;
@@ -58,12 +79,40 @@ public class GuardedToolCallback implements ToolCallback {
         this.argClamper = argClamper == null ? ArgClamper.NOOP : argClamper;
         this.runId = runId;
         this.step = step;
+        this.toolNameOverride = toolNameOverride;
     }
 
-    /** 透传：模型看到的工具定义与原始工具一致。 */
+    /**
+     * 生效的工具名。
+     *
+     * <p><b>为什么改名要放在这个类里，而不是外面再套一层改名装饰器</b>：
+     * 工具名是安全相关的——模型看到的名字与策略引擎用来判定的名字
+     * <b>必须是同一个值</b>。放在同一个类里，两者由同一个字段、
+     * 同一个方法产出，不存在被改岔的可能。
+     * 若拆成两层装饰器，一旦包装顺序写错，就可能出现
+     * 「模型看到 mcp:srv:tool、策略查的是 tool」这种正是工具投毒要利用的缝隙。
+     *
+     * <p>这也是 ArchUnit 规则 F9 只允许这一个 {@code ToolCallback} 实现的原因：
+     * 每多一个装饰器，就多一处包装顺序出错的机会。
+     */
+    private String effectiveName() {
+        return toolNameOverride != null ? toolNameOverride : delegate.getToolDefinition().name();
+    }
+
+    /** 透传：模型看到的工具定义与原始工具一致（除被显式改名的 MCP 工具）。 */
     @Override
     public ToolDefinition getToolDefinition() {
-        return delegate.getToolDefinition();
+        ToolDefinition original = delegate.getToolDefinition();
+        if (toolNameOverride == null) {
+            return original;
+        }
+        // description 与 inputSchema 必须原样保留：改的只是名字，
+        // 改了 schema 就等于让模型按错误的参数形状调用真实工具。
+        return ToolDefinition.builder()
+                .name(toolNameOverride)
+                .description(original.description())
+                .inputSchema(original.inputSchema())
+                .build();
     }
 
     @Override
@@ -78,7 +127,9 @@ public class GuardedToolCallback implements ToolCallback {
 
     @Override
     public String call(String toolInput, ToolContext toolContext) {
-        String toolName = delegate.getToolDefinition().name();
+        // 用 effectiveName() 而不是 delegate 报的名字：MCP 工具必须按带前缀的名字查策略，
+        // 否则 mcp:srv:tool 这条白名单永远匹配不上，而默认拒绝会让所有 MCP 工具不可用。
+        String toolName = effectiveName();
 
         // ① 默认拒绝
         ToolPolicy policy = policyEngine.resolve(toolName);
@@ -147,6 +198,11 @@ public class GuardedToolCallback implements ToolCallback {
     /** 便于测试与调试：暴露被包装的原始工具。 */
     public ToolCallback delegate() {
         return delegate;
+    }
+
+    /** 生效的工具名（MCP 工具带 {@code mcp:<server>:} 前缀）。 */
+    public String toolName() {
+        return effectiveName();
     }
 
     /** 便捷构造：只读工具无需审批与夹紧。 */

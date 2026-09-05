@@ -37,6 +37,7 @@ public final class OnCallConfigRegistry {
         ticket(specs);
         alert(specs);
         autonomy(specs);
+        mcp(specs);
         fallback(specs);
         return new ConfigRegistry(specs);
     }
@@ -254,6 +255,41 @@ public final class OnCallConfigRegistry {
         out.add(ConfigSpec.builder(OnCallConfigKeys.AUTONOMY_KILL_SWITCH_MODE, ConfigType.ENUM_STRING, "FULL", ConfigTier.RUNTIME_HOT)
                 .group(g).allowedValues(List.of("FULL", "READ_ONLY", "OFF"))
                 .description("全局运行模式（kill switch）。READ_ONLY 拒绝一切非只读工具；OFF 完全停用 Agent。")
+                .build());
+    }
+
+    private static void mcp(List<ConfigSpec> out) {
+        String g = OnCallConfigKeys.GROUP_MCP;
+
+        // 这一项对应 Spring AI 的 spring.ai.mcp.client.toolcallback.enabled。
+        // 【为什么必须是 BACKEND_ONLY 而不是 RUNTIME_HOT】
+        // 框架的这个开关默认是 true —— 也就是"什么都不做"的情况下，
+        // MCP client 会自己把远端发现的工具注册给模型，整套工具网关被绕过。
+        // 把它放到前端就等于给界面加了一个"关闭全部安全关卡"的按钮。
+        // 它属于兜底机制配置，按项目约束只有这类才允许后端固定。
+        out.add(ConfigSpec.builder(OnCallConfigKeys.MCP_TOOLCALLBACK_ENABLED, ConfigType.BOOLEAN,
+                        "false", ConfigTier.BACKEND_ONLY)
+                .group(g)
+                .description("是否允许框架自动把 MCP 工具注册给模型。必须为 false："
+                        + "MCP 工具只能经 McpToolRegistrar 显式纳管后进入（不变量 I14）。")
+                .build());
+
+        // RUNTIME_HOT + 高危清单：可以运行时改，但必须两个人同意。
+        // 加一个 server 等于把一批远端工具接入系统的攻击面，不该一个人说了算。
+        out.add(ConfigSpec.builder(OnCallConfigKeys.MCP_ALLOWED_SERVERS, ConfigType.STRING_LIST,
+                        "", ConfigTier.RUNTIME_HOT)
+                .group(g)
+                .description("允许连接的 MCP server 名单（逗号分隔）。不在名单里的 server 一律不连接。"
+                        + "server 名只允许字母数字与 . _ -，不能含 ':'。")
+                .build());
+
+        // 刻意不做成"自动纳管新工具"的开关：默认拒绝是不变量，不是可调参数。
+        // 这个键只控制"多久重新看一眼清单以便发现异常"，不控制"发现了要不要放行"。
+        out.add(ConfigSpec.builder(OnCallConfigKeys.MCP_DISCOVERY_REFRESH_SECONDS, ConfigType.INT,
+                        "300", ConfigTier.RUNTIME_HOT)
+                .group(g).bounds(60, 86400)
+                .description("重新拉取 MCP 工具清单的间隔（秒）。用途是发现 server 悄悄新增了工具"
+                        + "并告警，不是自动放行——未纳管的工具永远进不来。")
                 .build());
     }
 

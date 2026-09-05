@@ -209,10 +209,37 @@ class OnCallConfigRegistryTest {
         // 用精确值而不是区间，是刻意的：曾经文档写「36 项 / RUNTIME_HOT 20 项」而
         // 代码实际是 38 项 / 22 项，差了 2 项且没人发现。区间断言抓不到这种漂移。
         Map<ConfigTier, Integer> counts = registry.countByTier();
-        assertThat(counts.get(ConfigTier.RUNTIME_HOT)).isEqualTo(23);
+        assertThat(counts.get(ConfigTier.RUNTIME_HOT)).isEqualTo(25);
         assertThat(counts.get(ConfigTier.REQUIRES_MIGRATION)).isEqualTo(8);
-        assertThat(counts.get(ConfigTier.BACKEND_ONLY)).isEqualTo(8);
-        assertThat(registry.size()).isEqualTo(39);
+        assertThat(counts.get(ConfigTier.BACKEND_ONLY)).isEqualTo(9);
+        assertThat(registry.size()).isEqualTo(42);
+    }
+
+    @Test
+    @DisplayName("MCP 自动注册必须默认关闭且仅后端可见 —— 打开它等于关掉整个工具网关")
+    void mcpAutoRegistrationIsOffByDefaultAndHidden() {
+        ConfigSpec spec = registry.require(OnCallConfigKeys.MCP_TOOLCALLBACK_ENABLED);
+        // Spring AI 的 spring.ai.mcp.client.toolcallback.enabled 默认是 true，
+        // 也就是"什么都不做"的情况下框架会自己把远端工具注册给模型。
+        // 这条断言守的是我们的默认值与框架默认值相反这件事——
+        // 它被改回 true 的话，McpToolRegistrar 的全部逻辑都会被绕过。
+        assertThat(spec.defaultValue()).isEqualTo("false");
+        assertThat(spec.tier()).isEqualTo(ConfigTier.BACKEND_ONLY);
+    }
+
+    @Test
+    @DisplayName("MCP server 名单默认为空：没显式配就不连任何 server")
+    void mcpAllowedServersIsEmptyByDefault() {
+        assertThat(registry.require(OnCallConfigKeys.MCP_ALLOWED_SERVERS).defaultValue()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("刻意不存在 mcp 前缀格式的配置项 —— 它是安全边界不是可调参数")
+    void thereIsNoConfigurableMcpNamePrefix() {
+        // 前缀 mcp:<server>:<tool> 让"哪个 server 的哪个工具"可寻址。
+        // 如果它能被配置，就可以把两个 server 的名字空间合并，
+        // 从而用 A 的纳管结果去授权 B 的工具。
+        assertThat(registry.all()).extracting(ConfigSpec::key).noneMatch(k -> k.contains("prefix"));
     }
 
     @Test
@@ -221,7 +248,7 @@ class OnCallConfigRegistryTest {
         assertThat(registry.groups())
                 .contains(OnCallConfigKeys.GROUP_RETRIEVAL, OnCallConfigKeys.GROUP_CHUNKING,
                         OnCallConfigKeys.GROUP_VECTOR, OnCallConfigKeys.GROUP_AGENT,
-                        OnCallConfigKeys.GROUP_FALLBACK);
+                        OnCallConfigKeys.GROUP_MCP, OnCallConfigKeys.GROUP_FALLBACK);
         for (String g : registry.groups()) {
             assertThat(registry.byGroup(g)).as("空分组：%s", g).isNotEmpty();
         }

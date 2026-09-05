@@ -64,14 +64,15 @@ class ConfigAccessPolicyTest {
     }
 
     @Test
-    @DisplayName("高危清单就是那 5 个键，一个不多一个不少")
+    @DisplayName("高危清单就是那 6 个键，一个不多一个不少")
     void highRiskKeyList() {
         assertThat(ConfigAccessPolicy.HIGH_RISK_KEYS).containsExactlyInAnyOrder(
                 OnCallConfigKeys.AUTONOMY_LEVEL,
                 OnCallConfigKeys.AUTONOMY_KILL_SWITCH_MODE,
                 OnCallConfigKeys.RETRIEVAL_RERANK_ENABLED,
                 OnCallConfigKeys.AGENT_MAX_STEPS,
-                OnCallConfigKeys.ALERT_STORM_THRESHOLD_PER_MINUTE);
+                OnCallConfigKeys.ALERT_STORM_THRESHOLD_PER_MINUTE,
+                OnCallConfigKeys.MCP_ALLOWED_SERVERS);
         for (String key : ConfigAccessPolicy.HIGH_RISK_KEYS) {
             assertThat(policy.requiresSecondApproval(key)).as(key).isTrue();
             // 高危键必须真的在声明表里，否则清单会静默失效
