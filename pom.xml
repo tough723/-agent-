@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.oncall</groupId>
+  <artifactId>oncall-agent</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <name>oncall-agent</name>
+  <description>智能 OnCall Agent —— 模块化单体 + 2 个可独立伸缩组件</description>
+
+  <!--
+    版本基线（ADR-001）
+    ------------------------------------------------------------------
+    Spring AI Alibaba 取 GA 线 1.1.2.3；不要用 2.0.0-M1.1（milestone）。
+    Spring AI 版本由 SAA BOM 传递，不要手动覆盖。
+    开工第一件事请执行并把结果记进 ADR-001：
+        mvn dependency:tree -Dincludes=org.springframework.ai
+  -->
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <spring-boot.version>3.3.5</spring-boot.version>
+    <spring-ai-alibaba.version>1.1.2.3</spring-ai-alibaba.version>
+    <junit.version>5.10.2</junit.version>
+    <assertj.version>3.25.3</assertj.version>
+  </properties>
+
+  <modules>
+    <module>oncall-domain</module>
+    <module>oncall-tool-gateway</module>
+  </modules>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.alibaba.cloud.ai</groupId>
+        <artifactId>spring-ai-alibaba-bom</artifactId>
+        <version>${spring-ai-alibaba.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <version>${assertj.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
