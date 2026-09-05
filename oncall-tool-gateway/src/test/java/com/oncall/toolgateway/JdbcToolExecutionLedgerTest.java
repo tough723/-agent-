@@ -119,7 +119,7 @@ class JdbcToolExecutionLedgerTest {
 
     @Test
     @DisplayName("complete 在抢占行已被清理任务删掉时仍然写入结果")
-    void completeSurvivesStaleCleanupRace() {
+    void completeSurvivesStaleCleanupRace() throws Exception {
         // 场景：实例抢占成功 → 执行了 30 分钟 → 清理任务判定为崩溃残留并删除
         // → 实例这才执行成功。此时结果必须仍然落库，否则下一次重试会真的再扩容一次。
         //
