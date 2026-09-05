@@ -164,6 +164,14 @@ public final class OnCallConfigRegistry {
                 .group(g).bounds(200, 16000)
                 .description("单次调用的最大输出 token。直接影响成本。")
                 .build());
+        // 这个参数同时影响三件事：可复现性（不为 0 则评测判据失效）、幻觉率、
+        // 结构化输出成功率。运维 Agent 不需要创造性，三个场景都用 0。
+        // 设为 RUNTIME_HOT 是为了能做 A/B 对比实验，不是鼓励调高。
+        out.add(ConfigSpec.builder(OnCallConfigKeys.GENERATION_TEMPERATURE, ConfigType.DOUBLE, "0.0", ConfigTier.RUNTIME_HOT)
+                .group(g).bounds(0.0, 1.0)
+                .description("采样温度。默认 0：运维场景不需要创造性，且不为 0 时评测结果不可复现、"
+                        + "回归无法判定。评测跑批必须为 0。调高会同时抬高幻觉率与非法 JSON 概率。")
+                .build());
     }
 
     // ------------------------------------------------------------------ 记忆

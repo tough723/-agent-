@@ -54,6 +54,7 @@ public final class OnCallConfigKeys {
     // ---- 生成 ----
     public static final String GENERATION_MAX_CONTEXT_TOKENS = "generation.max-context-tokens";
     public static final String GENERATION_MAX_OUTPUT_TOKENS = "generation.max-output-tokens";
+    public static final String GENERATION_TEMPERATURE = "generation.temperature";
 
     // ---- 记忆 ----
     public static final String MEMORY_WINDOW_SIZE = "memory.window-size";

@@ -176,6 +176,18 @@ class OnCallConfigRegistryTest {
     }
 
     @Test
+    @DisplayName("temperature 默认 0：不为 0 时评测结果不可复现，L3 回归判据会失效")
+    void temperatureDefaultsToZero() {
+        ConfigSpec t = registry.require(OnCallConfigKeys.GENERATION_TEMPERATURE);
+        assertThat(t.defaultValue()).isEqualTo("0.0");
+        assertThat(Double.parseDouble(t.defaultValue())).isZero();
+        assertThat(t.min()).isZero();
+        assertThat(t.max()).isEqualTo(1.0);
+        // 说明里必须写清"评测跑批必须为 0"，否则调的人会不知道后果
+        assertThat(t.description()).contains("评测跑批必须为 0");
+    }
+
+    @Test
     @DisplayName("空召回重试阈值必须小于主阈值，否则重试没有意义")
     void retryThresholdIsLowerThanPrimary() {
         double primary = Double.parseDouble(registry.require(OnCallConfigKeys.RETRIEVAL_SIMILARITY_THRESHOLD).defaultValue());
@@ -192,14 +204,15 @@ class OnCallConfigRegistryTest {
     }
 
     @Test
-    @DisplayName("分级统计：绝大多数参数被外置，只有兜底与 DDL 绑定项留在后端")
+    @DisplayName("分级统计用精确值：新增或改动配置项必须显式更新这里，防止文档与代码静默漂移")
     void tierDistribution() {
+        // 用精确值而不是区间，是刻意的：曾经文档写「36 项 / RUNTIME_HOT 20 项」而
+        // 代码实际是 38 项 / 22 项，差了 2 项且没人发现。区间断言抓不到这种漂移。
         Map<ConfigTier, Integer> counts = registry.countByTier();
-        assertThat(counts.get(ConfigTier.RUNTIME_HOT)).isGreaterThan(15);
-        assertThat(counts.get(ConfigTier.REQUIRES_MIGRATION)).isGreaterThanOrEqualTo(8);
-        assertThat(counts.get(ConfigTier.BACKEND_ONLY)).isGreaterThanOrEqualTo(8);
-        int total = counts.values().stream().mapToInt(Integer::intValue).sum();
-        assertThat(total).isEqualTo(registry.size());
+        assertThat(counts.get(ConfigTier.RUNTIME_HOT)).isEqualTo(23);
+        assertThat(counts.get(ConfigTier.REQUIRES_MIGRATION)).isEqualTo(8);
+        assertThat(counts.get(ConfigTier.BACKEND_ONLY)).isEqualTo(8);
+        assertThat(registry.size()).isEqualTo(39);
     }
 
     @Test

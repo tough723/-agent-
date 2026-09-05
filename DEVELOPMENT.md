@@ -145,8 +145,8 @@ oncall-agent/
 │       ├── ConfigSnapshot.java          一次请求内配置一致 + revision 标注
 │       ├── ConfigChange.java            变更审计记录
 │       ├── ConfigAuditLog.java          审计端口 + InMemory 实现
-│       ├── OnCallConfigKeys.java        36 个配置键常量
-│       ├── OnCallConfigRegistry.java    36 项参数声明（逐条对应文档冻结清单）
+│       ├── OnCallConfigKeys.java        39 个配置键常量
+│       ├── OnCallConfigRegistry.java    39 项参数声明（23 热改 / 8 迁移 / 8 后端专属）
 │       ├── schema/ConfigSchemaExporter.java  前端 JSON schema 导出（手写，零依赖）
 │       └── store/
 │           ├── JdbcConfigStore.java     配置覆盖值持久化（墓碑行 + 方言无关 upsert）
@@ -237,7 +237,7 @@ oncall-agent/
 | `ConfigSnapshot` | 一次请求内配置一致，并标明基于哪一版 revision |
 | `ConfigSchemaExporter` | 导出前端可直接渲染的 JSON schema，后端加配置项前端自动多一个表单项 |
 
-**36 项参数**逐条对应 `质量与可靠性设计.md §3.1` 的 19 项冻结参数 +
+**39 项参数**逐条对应 `质量与可靠性设计.md §3.1` 的 19 项冻结参数 +
 `开工前决策冻结与返工风险评估.md §5` 补充的 6 项，并用测试锁住默认值一致性。
 
 两个上游硬限制被**编码成校验边界**，前端物理上填不出会导致故障的值：
