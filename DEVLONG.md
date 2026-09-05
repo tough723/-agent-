@@ -149,6 +149,7 @@
 | 凭空 import 了 `ConfigSchemaExporterHolder`，调用了不存在的 `service.auditHistory()` | 读一遍 `grep -nE "public "` 就能避免 |
 | 测试辅助方法里混用两个时钟 | `PendingChangeStore.size()` 用真实时钟过滤注入时钟算出的过期时间，恒返回 0 |
 | **把「Ontology」等同于「OWL + 推理机」并整体否定** | 用户追问后才发现是过度否定。轻量本体（概念层 + 带类型关系 + 规则集）是应该做的，而且它能解决 MCP 工具风险分级这个 P0 缺口。**教训：否定一个方案前，先确认否定的是它的哪个层次** |
+| **修正后又只给了成本理由，且概念模型有错** | 被追问"是否真的掌握这套方法论"后用 CQ 与 OntoClean 重做，查出 `CoreService` 不该是子类（非刚性），已改为 `criticality` 属性。否决 OWL 的真正理由是**语义不匹配**（OWA / 单调性 / 变更速度），不是成本 |
 
 ---
 
