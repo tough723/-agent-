@@ -36,9 +36,18 @@ public final class InMemoryPendingChangeStore implements PendingChangeStore {
         byId.remove(id);
     }
 
-    /** 测试用：当前未过期的待复核数量。 */
+    /**
+     * 当前存放的待复核单数量。<b>裸计数，不掺时钟</b>。
+     *
+     * <p>这里曾经写成"过滤掉已过期的再计数"，结果踩了一个坑：controller 用的是
+     * 注入的时钟（测试里是 1_000_000），而这里用的是 {@code System.currentTimeMillis()}
+     * （约 1.7e12）。两个时钟一比，所有单都被判为过期，方法恒返回 0——
+     * 断言失败的信息却指向 controller，把排查引向了错误方向。
+     *
+     * <p>根本原因是职责越界：过期判断已经由 {@code ConfigAdminController} 负责
+     * （它才有那个可注入的时钟），store 不该再做一遍。
+     */
     public int size() {
-        long now = System.currentTimeMillis();
-        return (int) byId.values().stream().filter(c -> !c.isExpired(now)).count();
+        return byId.size();
     }
 }
