@@ -40,6 +40,38 @@ jobs:
       - name: Build & test oncall-tool-gateway (依赖 Spring AI)
         run: mvn -B -pl oncall-tool-gateway -am test 2>&1 | tee /tmp/gateway.log
 
+      # 硬保险：surefire 2.x 遇到 JUnit 5 会静默跑 0 个测试并报成功。
+      # 只有「测试数 > 0 且失败数 = 0」才算通过，不接受空跑。
+      - name: Assert tests actually ran
+        run: |
+          set -euo pipefail
+          total=0; failures=0; errors=0; skipped=0; files=0
+          for f in $(find . -path '*/target/surefire-reports/*.txt'); do
+            files=$((files+1))
+            line=$(grep -m1 -E '^Tests run:' "$f" || true)
+            [ -n "$line" ] || continue
+            t=$(echo "$line" | sed -E 's/.*Tests run: *([0-9]+).*/\1/')
+            fl=$(echo "$line" | sed -E 's/.*Failures: *([0-9]+).*/\1/')
+            er=$(echo "$line" | sed -E 's/.*Errors: *([0-9]+).*/\1/')
+            sk=$(echo "$line" | sed -E 's/.*Skipped: *([0-9]+).*/\1/')
+            total=$((total+t)); failures=$((failures+fl)); errors=$((errors+er)); skipped=$((skipped+sk))
+            echo "  $f -> $line"
+          done
+          echo "===== 报告文件数=$files 测试总数=$total 失败=$failures 错误=$errors 跳过=$skipped ====="
+          if [ "$files" -eq 0 ]; then
+            echo "❌ 没有找到任何 surefire 报告：测试根本没有执行（很可能 surefire 版本不支持 JUnit 5）"
+            exit 1
+          fi
+          if [ "$total" -eq 0 ]; then
+            echo "❌ 测试总数为 0：构建「成功」但一个测试都没跑，这不叫通过"
+            exit 1
+          fi
+          if [ "$failures" -ne 0 ] || [ "$errors" -ne 0 ]; then
+            echo "❌ 存在失败或错误的测试"
+            exit 1
+          fi
+          echo "✅ $total 个测试全部执行且通过"
+
       # 失败时把关键错误回显到 job summary，便于从 API 侧读取
       - name: Surface errors on failure
         if: failure()
@@ -64,5 +96,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: surefire-reports
-          path: '**/target/surefire-reports/*.txt'
-          if-no-files-found: ignore
+          path: '**/surefire-reports/*.txt'
+          if-no-files-found: error
