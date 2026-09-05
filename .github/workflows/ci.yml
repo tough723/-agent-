@@ -44,26 +44,19 @@ jobs:
       - name: Diagnose test execution
         if: always()
         run: |
-          echo "===== surefire 实际使用的版本 ====="
-          mvn -B -q help:evaluate -Dexpression=maven.version -DforceStdout 2>/dev/null || true
-          mvn -B help:describe -Dplugin=org.apache.maven.plugins:maven-surefire-plugin 2>&1 \
-            | grep -Ei "^Name|^Version|^Goal" | head -5 || true
-          echo "===== 编译产物 ====="
-          find . -path '*/target/classes/*.class' | head -5
-          echo "----- 测试类编译产物 -----"
-          find . -path '*/target/test-classes/*.class' | head -10
-          echo "===== surefire 报告目录 ====="
-          find . -type d -name surefire-reports | head -5
-          echo "===== domain.log 中与 surefire/test 相关的行 ====="
-          grep -Ei "surefire|Tests run|No tests|Skipping|test-classes" /tmp/domain.log 2>/dev/null | head -25 || true
-          echo "===== gateway.log 中与 surefire/test 相关的行 ====="
-          grep -Ei "surefire|Tests run|No tests|Skipping|test-classes" /tmp/gateway.log 2>/dev/null | head -25 || true
-          # 以 annotation 形式发出，便于从 API 侧读取
-          nclass=$(find . -path '*/target/test-classes/*.class' | wc -l)
-          nrep=$(find . -path '*/surefire-reports/*.txt' | wc -l)
-          echo "::notice::诊断 test-classes 编译数=$nclass surefire报告数=$nrep"
-          grep -Ei "surefire.*:[0-9]|Tests run|No tests to run" /tmp/domain.log 2>/dev/null | head -6 \
-            | sed 's/^/::notice::domain /' || true
+          set +e
+          echo "::notice::DIAG mvn=$(mvn -version 2>/dev/null | head -1)"
+          echo "::notice::DIAG pwd=$(pwd) 文件数=$(ls | tr '\n' ' ')"
+          echo "::notice::DIAG domain.log行数=$(wc -l < /tmp/domain.log 2>/dev/null || echo MISSING)"
+          echo "::notice::DIAG main.class=$(find . -path '*/target/classes/*.class' 2>/dev/null | wc -l) test.class=$(find . -path '*/target/test-classes/*.class' 2>/dev/null | wc -l)"
+          echo "::notice::DIAG target目录=$(find . -maxdepth 2 -type d -name target 2>/dev/null | tr '\n' ' ')"
+          # 最有信息量：Maven 到底执行了哪些插件
+          grep -E "^\[INFO\] --- |^\[INFO\] Building |^\[INFO\] BUILD|^\[WARNING\]|^\[ERROR\]" /tmp/domain.log 2>/dev/null \
+            | head -30 | sed -E 's/^\[INFO\] //; s/^/::notice::DOM /'
+          grep -E "^\[INFO\] --- |^\[INFO\] Building |^\[INFO\] BUILD|^\[WARNING\]|^\[ERROR\]" /tmp/gateway.log 2>/dev/null \
+            | head -30 | sed -E 's/^\[INFO\] //; s/^/::notice::GW /'
+          echo "::notice::DIAG validate=$(grep -cE '^\[ERROR\]' /tmp/validate.log 2>/dev/null || echo 0)"
+          set -e
 
       # 硬保险：surefire 2.x 遇到 JUnit 5 会静默跑 0 个测试并报成功。
       # 只有「测试数 > 0 且失败数 = 0」才算通过，不接受空跑。
