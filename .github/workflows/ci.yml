@@ -6,6 +6,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 关键：默认 shell 不带 pipefail，`mvn ... | tee log` 的退出码取的是 tee 的 0，
+# 会把 Maven 的失败伪装成「步骤成功」（本项目实测踩过，POM 不可解析却全绿）。
+# 这里统一加 -e -o pipefail，让管道里任何一环失败都真正失败。
+defaults:
+  run:
+    shell: bash -e -o pipefail {0}
+
 jobs:
   build:
     name: Build & Test (JDK 17)
@@ -15,17 +22,30 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
           cache: maven
 
-      # POM 模型校验单独一步：依赖版本缺失这类问题会在这里暴露，
-      # 而不是混在编译错误里。注意它是整个 reactor 的校验，
-      # 任一模块 POM 有问题都会失败。
+      # 先确认所有 POM 是合法且可解析的 XML。XML 注释里出现连续两个减号就会
+      # 直接 Non-parseable，而这类错误如果发生在管道里很容易被吞掉。
+      - name: Check all POM files are well-formed XML
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            if ! python3 -c "import xml.etree.ElementTree as ET,sys; ET.parse(sys.argv[1])" "$f"; then
+              echo "::error::$f 不是合法 XML"
+              fail=1
+            else
+              echo "OK  $f"
+            fi
+          done < <(find . -name pom.xml)
+          exit $fail
+
+      # POM 模型校验：依赖缺 version 这类问题在这里暴露，与编译错误分开
       - name: Validate POM model (all modules)
-        run: mvn -B validate 2>&1 | tee /tmp/validate.log
+        run: mvn -B validate
 
       - name: Record resolved Spring AI version (ADR-001)
         run: |
@@ -33,81 +53,46 @@ jobs:
             -DoutputFile=/tmp/spring-ai-tree.txt -DappendOutput=true || true
           echo "===== resolved org.springframework.ai artifacts ====="
           cat /tmp/spring-ai-tree.txt 2>/dev/null || echo "(dependency:tree unavailable)"
+          # 以 annotation 形式带出，便于从 API 侧读取
+          grep -Eo "org.springframework.ai:[a-z-]+:jar:[0-9][^ :]*" /tmp/spring-ai-tree.txt 2>/dev/null \
+            | sort -u | head -8 | sed 's/^/::notice::AI-DEP /' || true
 
       - name: Build & test oncall-domain (纯 Java，零外部依赖)
-        run: mvn -B -pl oncall-domain -am test 2>&1 | tee /tmp/domain.log
+        run: mvn -B -pl oncall-domain -am test
 
       - name: Build & test oncall-tool-gateway (依赖 Spring AI)
-        run: mvn -B -pl oncall-tool-gateway -am test 2>&1 | tee /tmp/gateway.log
-
-      # 诊断：把关键事实作为 annotation 发出（这是从沙箱侧唯一能读到的 CI 输出通道）
-      - name: Diagnose test execution
-        if: always()
-        run: |
-          set +e
-          echo "::notice::DIAG mvn=$(mvn -version 2>/dev/null | head -1)"
-          echo "::notice::DIAG pwd=$(pwd) 文件数=$(ls | tr '\n' ' ')"
-          echo "::notice::DIAG domain.log行数=$(wc -l < /tmp/domain.log 2>/dev/null || echo MISSING)"
-          echo "::notice::DIAG main.class=$(find . -path '*/target/classes/*.class' 2>/dev/null | wc -l) test.class=$(find . -path '*/target/test-classes/*.class' 2>/dev/null | wc -l)"
-          echo "::notice::DIAG target目录=$(find . -maxdepth 2 -type d -name target 2>/dev/null | tr '\n' ' ')"
-          # 最有信息量：Maven 到底执行了哪些插件
-          grep -E "^\[INFO\] --- |^\[INFO\] Building |^\[INFO\] BUILD|^\[WARNING\]|^\[ERROR\]" /tmp/domain.log 2>/dev/null \
-            | head -30 | sed -E 's/^\[INFO\] //; s/^/::notice::DOM /'
-          grep -E "^\[INFO\] --- |^\[INFO\] Building |^\[INFO\] BUILD|^\[WARNING\]|^\[ERROR\]" /tmp/gateway.log 2>/dev/null \
-            | head -30 | sed -E 's/^\[INFO\] //; s/^/::notice::GW /'
-          echo "::notice::DIAG validate=$(grep -cE '^\[ERROR\]' /tmp/validate.log 2>/dev/null || echo 0)"
-          set -e
+        run: mvn -B -pl oncall-tool-gateway -am test
 
       # 硬保险：surefire 2.x 遇到 JUnit 5 会静默跑 0 个测试并报成功。
       # 只有「测试数 > 0 且失败数 = 0」才算通过，不接受空跑。
       - name: Assert tests actually ran
         run: |
-          set -euo pipefail
           total=0; failures=0; errors=0; skipped=0; files=0
-          for f in $(find . -path '*/target/surefire-reports/*.txt'); do
+          while IFS= read -r f; do
             files=$((files+1))
             line=$(grep -m1 -E '^Tests run:' "$f" || true)
             [ -n "$line" ] || continue
-            t=$(echo "$line" | sed -E 's/.*Tests run: *([0-9]+).*/\1/')
-            fl=$(echo "$line" | sed -E 's/.*Failures: *([0-9]+).*/\1/')
-            er=$(echo "$line" | sed -E 's/.*Errors: *([0-9]+).*/\1/')
-            sk=$(echo "$line" | sed -E 's/.*Skipped: *([0-9]+).*/\1/')
-            total=$((total+t)); failures=$((failures+fl)); errors=$((errors+er)); skipped=$((skipped+sk))
+            total=$((total + $(echo "$line" | sed -E 's/.*Tests run: *([0-9]+).*/\1/')))
+            failures=$((failures + $(echo "$line" | sed -E 's/.*Failures: *([0-9]+).*/\1/')))
+            errors=$((errors + $(echo "$line" | sed -E 's/.*Errors: *([0-9]+).*/\1/')))
+            skipped=$((skipped + $(echo "$line" | sed -E 's/.*Skipped: *([0-9]+).*/\1/')))
             echo "  $f -> $line"
-          done
+          done < <(find . -path '*/target/surefire-reports/*.txt' | sort)
           echo "===== 报告文件数=$files 测试总数=$total 失败=$failures 错误=$errors 跳过=$skipped ====="
+          echo "::notice::测试统计 报告文件=$files 测试总数=$total 失败=$failures 错误=$errors 跳过=$skipped"
           if [ "$files" -eq 0 ]; then
-            echo "❌ 没有找到任何 surefire 报告：测试根本没有执行（很可能 surefire 版本不支持 JUnit 5）"
+            echo "::error::没有找到任何 surefire 报告：测试根本没有执行"
             exit 1
           fi
           if [ "$total" -eq 0 ]; then
-            echo "❌ 测试总数为 0：构建「成功」但一个测试都没跑，这不叫通过"
+            echo "::error::测试总数为 0：构建「成功」但一个测试都没跑，这不叫通过"
             exit 1
           fi
           if [ "$failures" -ne 0 ] || [ "$errors" -ne 0 ]; then
-            echo "❌ 存在失败或错误的测试"
+            echo "::error::存在失败或错误的测试：failures=$failures errors=$errors"
             exit 1
           fi
           echo "✅ $total 个测试全部执行且通过"
-
-      # 失败时把关键错误回显到 job summary，便于从 API 侧读取
-      - name: Surface errors on failure
-        if: failure()
-        run: |
-          {
-            echo "## 构建失败摘要"
-            for f in /tmp/validate.log /tmp/domain.log /tmp/gateway.log; do
-              [ -f "$f" ] || continue
-              echo ""
-              echo "### $f"
-              echo '```'
-              grep -E "\[ERROR\]|BUILD FAILURE|Could not resolve|Non-resolvable|is missing|error:|Tests run:.*Failures" "$f" | head -40
-              echo '```'
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "===== validate ====="; grep -E "\[ERROR\]|BUILD FAILURE" /tmp/validate.log 2>/dev/null | head -20
-          echo "===== domain ====="; grep -E "\[ERROR\]|BUILD FAILURE|error:" /tmp/domain.log 2>/dev/null | head -30
-          echo "===== gateway ====="; grep -E "\[ERROR\]|BUILD FAILURE|error:" /tmp/gateway.log 2>/dev/null | head -30
 
       - name: Upload surefire reports
         if: always()

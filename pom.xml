@@ -13,11 +13,13 @@
 
   <!--
     版本基线（ADR-001）
-    ------------------------------------------------------------------
+
     Spring AI Alibaba 取 GA 线 1.1.2.3；不要用 2.0.0-M1.1（milestone）。
     Spring AI 版本由 SAA BOM 传递，不要手动覆盖。
     开工第一件事请执行并把结果记进 ADR-001：
         mvn dependency:tree -Dincludes=org.springframework.ai
+
+    注意：XML 注释内部不允许出现连续两个减号，所以此处不要写减号分隔线。
   -->
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
