@@ -7,39 +7,88 @@
 
 ## ⚠️ 首先：本轮代码未经编译验证
 
-**当前沙箱环境无 JDK、无 Maven，且除白名单外无外网**（已实测：`java`/`mvn` 命令不存在，`apt-get` 无权限安装，`repo1.maven.org` 与 `deb.debian.org` 连接失败）。
+**当前沙箱环境无 JDK、无 Maven，且除白名单外无外网**（已实测：`java`/`mvn` 命令不存在，`apt-get` 无权限安装，`repo1.maven.org` 与 `deb.debian.org` 连接失败）。因此本地无法编译，改为用 GitHub Actions 代为验证。
 
-因此下面所有 Java 代码**一行都没有编译过**。所有 API 签名均对照 Spring AI / Spring AI Alibaba 官方文档逐个核对，但"对照文档正确"和"能编译通过"是两件事。
+### CI 已经验证通过（不是"待你验证"）
 
-**你拿到代码后第一件事**：
+`.github/workflows/ci.yml` 在每次 push 时用 JDK 17 + Maven 3.9.16 真实编译并跑测试。
+**最近一次全绿**：run `33951132551` / commit `267f4b8` / conclusion `success`。
 
-```bash
-mvn -q -pl oncall-domain test          # 纯 Java，零外部依赖，应该立刻能跑
-mvn -q -pl oncall-tool-gateway test    # 依赖 Spring AI，可能需要调坐标（见下）
-mvn dependency:tree -Dincludes=org.springframework.ai   # 把实际版本记进 ADR-001
+| 步骤 | 结果 |
+|------|------|
+| Check all POM files are well-formed XML | ✅ |
+| Validate POM model (all modules) | ✅ |
+| Record resolved Spring AI version | ✅ |
+| Build & test `oncall-domain`（纯 Java，零外部依赖） | ✅ |
+| Build & test `oncall-tool-gateway`（依赖 Spring AI） | ✅ |
+| Assert tests actually ran | ✅ `报告文件=5 测试总数=40 失败=0 错误=0 跳过=0` |
+
+**测试数字对得上**：5 个报告文件对应 5 个测试类，40 个测试对应本地 40 个 `@Test`。
+`GuardedToolCallback` 编译通过，意味着 `ToolCallback` / `ToolDefinition` /
+`ToolMetadata.builder()` / `ToolContext` 这套签名在 Spring AI **1.1.6** 上是对的——
+F1 那块最关键的装饰器代码不再是"对照文档推测"。
+
+**ADR-001 版本基线（CI 实测解析结果）**：
+
+```
+spring-ai-alibaba-bom : 1.1.2.3
+spring-ai-bom         : 1.1.6
+  org.springframework.ai:spring-ai-model:jar:1.1.6
+  org.springframework.ai:spring-ai-commons:jar:1.1.6
+  org.springframework.ai:spring-ai-template-st:jar:1.1.6
 ```
 
-### 已加 CI 代为验证
+> 注意：`spring-ai-alibaba-bom` **不**管理 `org.springframework.ai` 的 artifact。
+> 只引 SAA BOM 会让 `spring-ai-model` 缺 version，导致 POM 模型校验失败——
+> 而且是整个 reactor 一起失败，连零依赖的 `oncall-domain` 都构建不了。
+> 两个 BOM 必须同时引入（见父 `pom.xml` 的 `dependencyManagement`）。
 
-`.github/workflows/ci.yml` 会在每次 push 时用 JDK 17 + Maven 真实编译并跑测试，分模块执行以便定位失败点，并把解析到的 Spring AI 版本打印出来（供 ADR-001 使用）。
-
-**所以推上去之后，CI 结果就是编译验证结论** —— 不需要本地有 JDK。查看方式：
+查看方式：
 
 ```bash
 gh run list --branch arena/01a06d8c-agent
 gh run watch <run-id>
 ```
 
-若 `oncall-tool-gateway` 那步失败而 `oncall-domain` 通过，几乎可以确定是 Spring AI 依赖坐标问题（见下表第 1 行），业务逻辑本身没问题。
+### CI 抓到的三个真实缺陷（已全部修复，留档防再犯）
 
-**已知最可能需要调整的地方**（按概率排序）：
+按发现顺序。三个都不是"代码写错了"这么简单，其中两个会让 CI 撒谎。
 
-| 位置 | 风险 | 处理 |
-|------|------|------|
-| `oncall-tool-gateway/pom.xml` 的 `spring-ai-model` | 工具 API 所在 artifact 名未验证 | 解析不到就换成 `spring-ai-alibaba-starter-dashscope` |
-| `GuardedToolCallback` 的 `ToolContext` 导入 | 包路径 `org.springframework.ai.chat.model` 未验证 | 按 IDE 提示改 |
-| `ToolMetadata.builder()` / `ToolDefinition.name()` | 已对照官方文档核实，但跨 1.1/2.0 有差异 | 以 pin 的版本为准 |
-| `MessageChatMemoryAdvisor` 构造方式（`架构设计方案.md` §3.2） | 1.x 有构造器与 builder 两种写法 | 二选一 |
+1. **POM 不是合法 XML** —— 注释里写了 `----` 分隔线。XML 规范禁止注释内出现
+   连续两个减号，整个 `pom.xml` 直接 `Non-parseable`。
+   → CI 新增 `Check all POM files are well-formed XML` 前置步骤，用 Python
+   `xml.etree` 先解析一遍，把"XML 语法错"与"依赖/编译错"彻底分开。
+
+2. **`mvn ... 2>&1 | tee log` 会吞掉失败** —— 不带 `pipefail` 时管道退出码取的是
+   最后一环 `tee` 的 `0`，Maven 报错被完全掩盖，步骤显示"成功"。
+   这就是中途出现过一次**假全绿**的原因：实际一个 class 都没编译。
+   → 已加 `defaults.run.shell: bash -e -o pipefail {0}`，并去掉 mvn 步骤的 `| tee`。
+   **教训**：管道后的构建命令等于没有退出码检查。
+
+3. **record 静态工厂顶掉了访问器** —— `record Approval(boolean approved, ..., boolean expired)`
+   会隐式生成 `boolean approved()` / `boolean expired()`，而类里又声明了
+   `static Approval expired()`（同名同参、返回值不同），编译报
+   `invalid accessor method in record`，并让所有 `approval.approved()` 的布尔用法
+   一起失效。→ 静态工厂改为动词命名 `granted` / `rejected` / `timedOut`。
+   **规约**：record 的静态工厂名不得与任一组件名相同。
+
+另外顺手修的一个隐患：Maven super-POM 把 `maven-surefire-plugin` 默认钉在 **2.12.4**，
+该版本不支持 JUnit 5，会"找不到测试"然后**静默成功**。已在父 POM 钉住
+surefire **3.2.5** + compiler **3.13.0**，并显式声明 `junit-jupiter-engine` 与
+`junit-platform-launcher`。CI 里的 `Assert tests actually ran` 会进一步断言
+"报告文件数 > 0 且测试总数 > 0 且失败/错误 = 0"——**不接受空跑冒充通过**。
+
+### 仍需你本地验证的部分
+
+CI 只覆盖到 `oncall-domain` + `oncall-tool-gateway` 两个模块。下面这些还**没有代码**，
+自然也没被验证，不要当成已完成：
+
+| 位置 | 状态 |
+|------|------|
+| `MessageChatMemoryAdvisor` 构造方式（`架构设计方案.md` §3.2） | 仅有文档，1.x 有构造器与 builder 两种写法，写代码时二选一 |
+| `CitationVerifier` / `RerankPostProcessor` / `HybridRetriever` / `UsageTrackingAdvisor` | 仅在 `质量与可靠性设计.md` 中设计，未落地 |
+| M1 剩余：`JsonScaleArgsAdapter`、`JdbcToolAuditLog`、`WecomApprovalGate`、`McpToolRegistrar`、`GuardedToolCallbackTest` | 未落地 |
+
 
 ---
 
