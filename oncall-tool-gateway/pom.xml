@@ -41,5 +41,16 @@
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
+    <!--
+      仅测试作用域：JdbcToolExecutionLedger 的 SQL 必须在真实数据库上跑过。
+      用假 Connection 测 SQL 等于把断言写在被测代码里。
+      oncall-config 里的 H2 是 test 作用域，不会传递过来，所以要单独声明。
+    -->
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <version>2.3.232</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>

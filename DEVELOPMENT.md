@@ -13,7 +13,12 @@
 
 `.github/workflows/ci.yml` 在每次 push 时用 JDK 17 + Maven 3.9.16 真实编译并跑测试，
 另有一个独立的 job 用真实 PostgreSQL 16 + pgvector 跑 DDL。
-**最近一次全绿**：run `33983162216` / conclusion `success`（两个 job 都是）。
+**最近一次全绿**：run `33983334064` / conclusion `success`（两个 job 都是），
+commit `e7b596a`。下表是那次实测的数字。
+
+> 本轮（幂等账本，见 §1.5）新增了 3 个生产类、2 个测试类、24 个用例，
+> 并给 `db/migration` 加了 V7。**下表仍是上一次实测值**，本轮的预期数字
+> 见 §1.5 末尾的表——CI 跑完前不把它写成"已验证"。
 
 | 步骤 | 结果 |
 |------|------|
@@ -32,9 +37,10 @@
 **测试数字对得上**：20 个报告文件对应 20 个测试类，280 = 已有 184 +
 `oncall-ontology` 59 + `oncall-archtest` 8 + MCP 纳管等本轮新增 29。
 
-**DDL job 的两个断言**：`information_schema` 表数必须恰好 18
-（15 张逻辑表 + 3 个 DEFAULT 分区），`uq_agent_step_idem` 与
-`chk_approval_not_self` 必须各存在一条。数字变了说明有人动了 schema。
+**DDL job 的断言**：`information_schema` 表数必须恰好命中期望值
+（本轮起是 19 = 16 张逻辑表 + 3 个 DEFAULT 分区），`uq_agent_step_idem`、
+`chk_approval_not_self`、`chk_claim_state`、`tool_execution_claim_pkey`
+必须各存在一条。数字变了说明有人动了 schema。
 
 `GuardedToolCallback` 编译通过，意味着 `ToolCallback` / `ToolDefinition` /
 `ToolMetadata.builder()` / `ToolContext` 这套签名在 Spring AI **1.1.6** 上是对的——
@@ -173,18 +179,21 @@ oncall-agent/
 │       ├── ConfigItemView.java          前端视图 DTO（敏感值掩码）
 │       └── AdminApiException.java       统一异常 → HTTP 状态码
 │   └── src/test/java/...                3 个测试类（MockMvc standaloneSetup）
-└── oncall-tool-gateway/                 ✅ P0 安全核心
+└── oncall-tool-gateway/                 ✅ P0 安全核心（17 个生产类）
     └── src/main/java/com/oncall/toolgateway/
-        ├── ToolPolicyEngine.java        默认拒绝 + 拒绝事件上报
-        ├── GuardedToolCallback.java     Decorator：七道关卡
+        ├── ToolPolicyEngine.java        默认拒绝 + 拒绝事件上报 + mcpServers() 反推
+        ├── GuardedToolCallback.java     Decorator：七道关卡 + MCP 改名
         ├── KillSwitch.java + RunMode.java
         ├── ApprovalGate.java + Approval.java
-        ├── ToolAuditLog.java            审计 + 幂等
-        ├── IdempotencyStore.java
-        └── ArgClamper.java              Strategy：参数夹紧
-    └── src/test/java/.../ToolPolicyEngineTest.java       10 个用例
-        └── GuardedToolCallbackTest.java  24 个用例：七道关卡 + 关卡顺序 + 三条安全性质
+        ├── ToolAuditLog.java            审计（只追加）+ InMemoryToolAuditLog
+        ├── IdempotencyStore.java        幂等键生成 + Sha256IdempotencyStore
+        ├── ArgClamper.java              Strategy：参数夹紧
+        ├── clamp/                       ScaleReplicasClamper + ReplicaStatePort
+        └── mcp/                         MCP 工具显式纳管（见 §1.4）
+    └── src/test/java/...                            6 个测试类，80 个用例
 ```
+
+> 上面的 17 / 6 / 80 是本轮之前（commit `e7b596a`）的数字，见 §1.5 的增量表。
 
 **这些模块都是纯逻辑，没有 Spring 上下文**——`oncall-domain`、`oncall-config`、
 `oncall-ontology` 完全零依赖（JDBC 只用 JDK 自带的 `javax.sql`，H2 只在测试作用域），
@@ -284,6 +293,108 @@ MCP 工具背书；纳管 `cmdb` 的 `restart` 不等于纳管 `billing` 的 `re
 
 ---
 
+### 1.5 幂等账本独立成表（给不变量 I8 补上物理保证）
+
+```
+db/migration/
+└── V7__tool_execution_claim.sql     tool_execution_claim：幂等键就是主键
+
+oncall-tool-gateway/src/main/java/com/oncall/toolgateway/
+├── ToolExecutionLedger.java             端口：claim / isCompleted / resultOf / complete / release
+├── InMemoryToolExecutionLedger.java     单实例与测试用
+└── JdbcToolExecutionLedger.java         多实例必须用这个；只用 javax.sql，零方言语法
+
+oncall-tool-gateway/src/test/java/.../
+├── InMemoryToolExecutionLedgerTest.java  6 个用例
+└── JdbcToolExecutionLedgerTest.java     14 个用例（真 H2，建表语句从 V7 文件里抽）
+```
+
+#### 先更正一句我此前说错的话
+
+我在早前的说明里讲过「I8 的物理保证已经由 `uq_agent_step_idem` 提供」。**这句是错的。**
+`uq_agent_step_idem` 是 `agent_step` 上的唯一约束，粒度是**步**；
+而 `GuardedToolCallback` 的幂等键是 `runId|step|toolName|canonicalArgs`，粒度比一步细
+（一步里可以有多次不同的工具调用）。它约束不到工具执行，I8 当时**没有**物理保证。
+
+#### 原先的实现为什么在并发下不成立
+
+第④关原先是这样：
+
+```java
+if (auditLog.has(key)) { return auditLog.resultOf(key); }
+... 执行 ...
+auditLog.recordSuccess(key, toolName, args, result);
+```
+
+两个独立的问题：
+
+| 问题 | 后果 |
+|------|------|
+| 状态存在 `InMemoryToolAuditLog` 的 map 里 | 多实例各有一份 map。同一个重试请求被负载均衡打到另一个实例，就是**第二次真执行** |
+| `has()` 与 `recordSuccess()` 之间是"先查后写" | 即使单实例，两个线程也能同时通过 `has()` 检查，然后都执行 |
+
+**唯一能真正防住的写法是让"抢占"本身成为一次原子插入**：内存版用 `putIfAbsent`，
+JDBC 版靠主键冲突。应用层的 `SELECT` 再 `INSERT` 之间永远有窗口，
+而"两个实例同时扩容"正是这个窗口会造成真实事故的地方。
+
+#### 关键设计
+
+| 关键设计 | 为什么 |
+|---------|--------|
+| 独立一张表，不给 `tool_audit_log` 加 `UNIQUE` | 审计一次调用可以有多条事件（审批 / 夹紧 / 成功或失败），加唯一约束直接冲突；而幂等需要一行**可变**且失败后**可删**的记录 |
+| 从只追加的审计表里删行 = 篡改审计 | 「失败要能重试」要求删掉抢占行。放在审计表里，这个删除就是审计最不能容忍的操作 |
+| 幂等键就是主键，不再另建唯一索引 | 键本身就是一行的身份。`claim` 用 INSERT 抢占，主键冲突即"别人已经抢到了" |
+| 抢到手但没结果时**报错**，不返回 null | `claim=false` 且 `resultOf=null` 意味着另一次执行正在进行。此时返回空结果会被模型当成"执行成功了"，比失败危险得多 |
+| `release` 必须带 `state='CLAIMED'` 条件 | 少了它，一次迟到的失败回调会删掉已经 `COMPLETED` 的行 —— 成功结果丢失，下次重试**真的**再执行一遍 |
+| `complete` 先于 `recordSuccess` | 反过来，审计写入一失败，这次成功的执行就没有可重放记录，重试会真执行一遍。调换后即使审计抛异常，`release` 也只删 `CLAIMED`，已完成记录保得住 |
+| 审批被拒 / 审批超时也要 `release` | 否则这个键永久停在 `CLAIMED`，之后所有重试都被判"重复调用"。症状是"这个操作再也做不了了"，而且**没有任何报错指向原因** |
+| 重复键异常按正常分支处理，其余 SQL 异常上抛 | 把连接故障当成"已被抢占"，工具会静默不执行 —— "Agent 什么都不做"比抛异常难查得多 |
+| 不用方言语法（`MERGE INTO` / `ON CONFLICT`） | H2 与 PostgreSQL 不通用；捕获重复键异常是两边都成立的写法，因此这个类能在 H2 上真跑 |
+| `releaseStale(olderThanMillis)` | 实例在 `CLAIMED` 与 `complete` 之间被 kill，那一行就是永久残留，必须能被清理任务释放 |
+| `complete` 在抢占行已被清理时改用 INSERT | 执行了 30 分钟才被清理任务判定为残留、随后才成功 —— 结果仍必须落库，否则下次重试真的再扩容一次 |
+| 测试从 `db/migration/V7` 里抽建表语句，不用类里的 `CREATE_TABLE_SQL` 常量 | 用常量等于测一份 DDL 副本，生产上真正执行的 V7 没人验证；主键或 CHECK 写漏了测试照样绿 |
+
+#### 有测试直接证明的性质
+
+- 并发抢占（内存 16 线程 / JDBC 8 线程，`CyclicBarrier` 同时冲）→ **恰好一个赢家**；
+- `GuardedToolCallback` 16 线程并发调用同一幂等键 → 工具**只被真正执行一次**，
+  其余线程拿到 `ToolDeniedException`；
+- 执行失败 / 审批被拒 → 账本行数归零，同一请求可重试；
+- 迟到的 `release` **不能**删掉 `COMPLETED` 的行（两个实现各测一遍）；
+- V7 的 `chk_claim_state` 与主键真的在库里（直接对 H2 插非法状态 / 重复键，必须报错）。
+
+#### 本轮改动的预期数字（CI 跑完前不写成"已验证"）
+
+| 指标 | `e7b596a` 实测 | 本轮 | 依据 |
+|------|---------------|------|------|
+| 测试类 / 报告文件 | 20 | **22** | 新增 `InMemoryToolExecutionLedgerTest`、`JdbcToolExecutionLedgerTest` |
+| 测试用例 | 280 | **304** | +4（`GuardedToolCallbackTest` 26→30）+14（JDBC）+6（内存）= +24，逐文件 `@Test` 清点 |
+| `oncall-tool-gateway` | 17 类 / 80 用例 | **20 类 / 104 用例** | 同上 |
+| 生产类合计 | 75 | **78** | +3 |
+| DDL 表数 | 18 | **19** | V7 加 1 张逻辑表，DEFAULT 分区仍是 3 |
+| DDL 约束断言 | 2 条 | **4 条** | 加 `chk_claim_state`、`tool_execution_claim_pkey` |
+
+#### ⚠️ 本轮查出但**没有**顺手改的一件事
+
+`tool_audit_log`（V2）要求 `trace_id` / `tool_source` / `risk_level` /
+`args_masked` / `gate_outcome` 全部 `NOT NULL`，而 `ToolAuditLog` 的方法签名是
+
+```java
+void recordSuccess(String idempotencyKey, String toolName, String args, String result);
+```
+
+**四个必填列一个都拿不到**：没有 `trace_id`，没有 `tool_source`（LOCAL / MCP），
+没有 `risk_level`，`gate_outcome` 也没传（只能靠方法名反推，`recordClamped` 与
+`recordApproval` 之间还分不清 `PASSED` / `CLAMPED`）。
+`args` 也还是未脱敏的原文，而列名是 `args_masked`。
+
+也就是说 **`JdbcToolAuditLog` 现在写不出来**——写出来只能往必填列塞假值，
+而一张字段造假的审计表比没有审计更糟（它让人相信查过了）。
+这条已记入 [DEVLONG.md](DEVLONG.md) §9，改接口会动到 `GuardedToolCallback`
+全部审计调用点，属于独立一轮的工作，本轮不夹带。
+
+---
+
 ## 二、下一步：按模块推进（M1 → M7）
 
 ### M1 — 完成 tool-gateway 的落地实现（1 周）🟡 安全部分已完成，剩 5 项工程收尾
@@ -306,7 +417,7 @@ MCP 工具背书；纳管 `cmdb` 的 `restart` 不等于纳管 `billing` 的 `re
 | 待办 | 说明 |
 |------|------|
 | `JsonScaleArgsAdapter` | 把 `String` JSON 转成 `ScaleRequest`（需 Jackson），并实现 `ArgClamper` 接口 |
-| `JdbcToolAuditLog` | 落 `tool_audit_log` 表，`idempotency_key` 加 UNIQUE 约束。**内存版在多实例下幂等会失效** |
+| `JdbcToolAuditLog` | 落 `tool_audit_log` 表。**原先的写法（"`idempotency_key` 加 UNIQUE，因为内存版在多实例下幂等会失效"）已作废**：幂等已由 `tool_execution_claim`（V7）+ `JdbcToolExecutionLedger` 独立解决，审计表不该也不能承担它（一次调用多条事件、且失败要能删行）。剩下的问题是审计自身的持久性——内存版重启即丢，出事后无从追责。**且当前被卡住**：接口签名给不出表的必填列，见 §1.5 末尾与 [DEVLONG.md](DEVLONG.md) §9 第五项 |
 | 规范化升级 | `canonical()` 现在只去空白；应改为 Jackson 读 `TreeMap` 再序列化，消除 key 顺序影响 |
 | `WecomApprovalGate` | 企微卡片 + `expires_at` + 超时升级 + 双人复核 |
 | `AutonomyLevel` 接入调用链 | 与 `KillSwitch` 取交集：先 `assertAllowed()` 再 `canAutoExecute()` |

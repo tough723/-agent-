@@ -7,6 +7,7 @@ import com.oncall.domain.tool.ToolSource;
 import com.oncall.toolgateway.Approval;
 import com.oncall.toolgateway.ApprovalGate;
 import com.oncall.toolgateway.ArgClamper;
+import com.oncall.toolgateway.InMemoryToolExecutionLedger;
 import com.oncall.toolgateway.GuardedToolCallback;
 import com.oncall.toolgateway.InMemoryToolAuditLog;
 import com.oncall.toolgateway.KillSwitch;
@@ -51,8 +52,11 @@ class McpToolRegistrarTest {
         policyEngine = new ToolPolicyEngine(List.of());
         killSwitch = new KillSwitch();
         audit = new InMemoryToolAuditLog();
+        // 账本必须是同一个实例：guardedTools() 每次返回新的 GuardedToolCallback，
+        // 但幂等状态必须跨实例共享，否则重放判定就失效了。
         registrar = new McpToolRegistrar(catalog, policyEngine, killSwitch,
-                autoApprove(), audit, new Sha256IdempotencyStore(), ArgClamper.NOOP);
+                autoApprove(), audit, new Sha256IdempotencyStore(),
+                new InMemoryToolExecutionLedger(), ArgClamper.NOOP);
     }
 
     private static ToolPolicy mcpPolicy(String namespacedName, RiskLevel risk) {
@@ -316,7 +320,12 @@ class McpToolRegistrarTest {
     @DisplayName("协作者为 null 立即失败，而不是等到第一次纳管")
     void nullCollaboratorRejected() {
         assertThatThrownBy(() -> new McpToolRegistrar(null, policyEngine, killSwitch,
-                autoApprove(), audit, new Sha256IdempotencyStore(), ArgClamper.NOOP))
+                autoApprove(), audit, new Sha256IdempotencyStore(),
+                new InMemoryToolExecutionLedger(), ArgClamper.NOOP))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new McpToolRegistrar(catalog, policyEngine, killSwitch,
+                autoApprove(), audit, new Sha256IdempotencyStore(), null, ArgClamper.NOOP))
+                .as("缺了执行账本会让多实例下的幂等静默失效，必须立即失败")
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

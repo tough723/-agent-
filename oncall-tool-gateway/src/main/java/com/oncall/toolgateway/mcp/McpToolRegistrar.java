@@ -8,6 +8,7 @@ import com.oncall.toolgateway.GuardedToolCallback;
 import com.oncall.toolgateway.IdempotencyStore;
 import com.oncall.toolgateway.KillSwitch;
 import com.oncall.toolgateway.ToolAuditLog;
+import com.oncall.toolgateway.ToolExecutionLedger;
 import com.oncall.toolgateway.ToolPolicyEngine;
 import org.springframework.ai.tool.ToolCallback;
 
@@ -65,6 +66,7 @@ public final class McpToolRegistrar {
     private final ApprovalGate approvalGate;
     private final ToolAuditLog auditLog;
     private final IdempotencyStore idempotencyStore;
+    private final ToolExecutionLedger ledger;
     private final ArgClamper argClamper;
 
     public McpToolRegistrar(McpToolCatalog catalog,
@@ -73,9 +75,11 @@ public final class McpToolRegistrar {
                             ApprovalGate approvalGate,
                             ToolAuditLog auditLog,
                             IdempotencyStore idempotencyStore,
+                            ToolExecutionLedger ledger,
                             ArgClamper argClamper) {
         if (catalog == null || policyEngine == null || killSwitch == null
-                || approvalGate == null || auditLog == null || idempotencyStore == null) {
+                || approvalGate == null || auditLog == null || idempotencyStore == null
+                || ledger == null) {
             throw new IllegalArgumentException("McpToolRegistrar 的协作者不能为 null");
         }
         this.catalog = catalog;
@@ -84,6 +88,7 @@ public final class McpToolRegistrar {
         this.approvalGate = approvalGate;
         this.auditLog = auditLog;
         this.idempotencyStore = idempotencyStore;
+        this.ledger = ledger;
         this.argClamper = argClamper == null ? ArgClamper.NOOP : argClamper;
     }
 
@@ -158,7 +163,8 @@ public final class McpToolRegistrar {
         List<ToolCallback> out = new ArrayList<>();
         for (McpRegistrationResult.ManagedMcpTool t : inspect(server).accepted()) {
             out.add(new GuardedToolCallback(t.raw(), policyEngine, killSwitch, approvalGate,
-                    auditLog, idempotencyStore, argClamper, runId, step, t.namespacedName()));
+                    auditLog, idempotencyStore, ledger, argClamper, runId, step,
+                    t.namespacedName()));
         }
         return out;
     }

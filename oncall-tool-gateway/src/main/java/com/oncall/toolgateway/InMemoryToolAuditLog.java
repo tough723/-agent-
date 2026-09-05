@@ -1,8 +1,6 @@
 package com.oncall.toolgateway;
 
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -14,20 +12,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  */
 public class InMemoryToolAuditLog implements ToolAuditLog {
 
-    /** 已执行记录：key -> 执行结果。 */
-    private final Map<String, String> executed = new ConcurrentHashMap<>();
     /** 事件流水，供断言与调试。 */
     private final List<String> events = new CopyOnWriteArrayList<>();
-
-    @Override
-    public boolean has(String idempotencyKey) {
-        return executed.containsKey(idempotencyKey);
-    }
-
-    @Override
-    public String resultOf(String idempotencyKey) {
-        return executed.get(idempotencyKey);
-    }
 
     @Override
     public void recordApproval(String idempotencyKey, Approval approval) {
@@ -37,13 +23,11 @@ public class InMemoryToolAuditLog implements ToolAuditLog {
 
     @Override
     public void recordSuccess(String idempotencyKey, String toolName, String args, String result) {
-        executed.put(idempotencyKey, result);
         events.add("SUCCESS:" + toolName);
     }
 
     @Override
     public void recordFailure(String idempotencyKey, String toolName, String args, Throwable error) {
-        // 失败不写入 executed —— 允许重试
         events.add("FAILURE:" + toolName + ":" + error.getClass().getSimpleName());
     }
 
@@ -68,7 +52,6 @@ public class InMemoryToolAuditLog implements ToolAuditLog {
     }
 
     public void clear() {
-        executed.clear();
         events.clear();
     }
 }

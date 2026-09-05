@@ -145,7 +145,7 @@ jobs:
   #
   # 为什么必须单独一个 job：构建 job 的测试作用域只有 H2，
   # 而 V3/V4 的 PARTITION BY RANGE 与 V5 的 vector(1024)+HNSW 是 PostgreSQL 专有的，
-  # H2 根本不支持。也就是说 V2~V6 的 13 张表在加这个 job 之前
+  # H2 根本不支持。也就是说 V2~V7 的 14 张表在加这个 job 之前
   # **从未被任何数据库执行过一次**——语法错、分区顺序错、COMMENT ON 的列名拼错，
   # 全都要等到 M2 第一次启动才炸。schema 属于「改不了要重来」的那一类，
   # 晚发现的代价是非线性的。
@@ -158,6 +158,7 @@ jobs:
   #   vector(1024) + HNSW 索引、PARTITION BY RANGE 与 DEFAULT 分区共存、
   #   onto_concept.parent_id 的自引用外键、以及全部 COMMENT ON 的列名拼写。
   #   information_schema 报出 18 张表 = 15 张逻辑表 + 3 个 DEFAULT 分区。
+  #   V7 加入 tool_execution_claim 后是 19 张 = 16 张逻辑表 + 3 个 DEFAULT 分区。
   # -------------------------------------------------------------------
   ddl:
     name: DDL on PostgreSQL 16 + pgvector
@@ -180,7 +181,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run V1..V6 against a real database
+      - name: Run V1..V7 against a real database
         env:
           PGPASSWORD: oncall
         run: |
@@ -200,18 +201,21 @@ jobs:
           n=$(psql -h localhost -U postgres -d oncall -tAc \
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
           echo "::notice::DDL-表数 $n"
-          # 精确断言而不是「> 0」：18 = 15 张逻辑表 + 3 个 DEFAULT 分区
+          # 精确断言而不是「> 0」：19 = 16 张逻辑表 + 3 个 DEFAULT 分区
           # （alert_group_default / alert_event_default / llm_call_log_default）。
           # 这个数字变了说明有人动了 schema，必须是有意的。
-          if [ "$n" -ne 18 ]; then
-            echo "::error::DDL-表数 $n，期望 18（15 张逻辑表 + 3 个 DEFAULT 分区）"
+          if [ "$n" -ne 19 ]; then
+            echo "::error::DDL-表数 $n，期望 19（16 张逻辑表 + 3 个 DEFAULT 分区）"
             fail=1
           fi
           echo "===== 约束核查（幂等与不能自审） ====="
           psql -h localhost -U postgres -d oncall -c \
-            "SELECT conname, contype FROM pg_constraint WHERE conname IN ('uq_agent_step_idem','chk_approval_not_self','chk_onto_criticality') ORDER BY conname"
-          # 这两个约束是数据库级的不变量，必须以断言而不是「打印出来人看一眼」的形式存在
-          for c in uq_agent_step_idem chk_approval_not_self; do
+            "SELECT conname, contype FROM pg_constraint WHERE conname IN ('uq_agent_step_idem','chk_approval_not_self','chk_onto_criticality','chk_claim_state','tool_execution_claim_pkey') ORDER BY conname"
+          # 这些都是数据库级的不变量，必须以断言而不是「打印出来人看一眼」的形式存在。
+          # tool_execution_claim_pkey 尤其关键：GuardedToolCallback 的抢占语义
+          # 完全建立在「第二个 INSERT 一定失败」之上，主键写漏了整条防线就没了，
+          # 而且单实例测试照样全绿——只有多实例线上才会暴露成二次扩容。
+          for c in uq_agent_step_idem chk_approval_not_self chk_claim_state tool_execution_claim_pkey; do
             got=$(psql -h localhost -U postgres -d oncall -tAc \
               "SELECT count(*) FROM pg_constraint WHERE conname='$c'")
             if [ "$got" = "1" ]; then

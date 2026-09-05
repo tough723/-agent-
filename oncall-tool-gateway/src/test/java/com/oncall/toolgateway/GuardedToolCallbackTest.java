@@ -10,9 +10,7 @@ import org.springframework.ai.tool.definition.ToolDefinition;
 
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -36,6 +34,7 @@ class GuardedToolCallbackTest {
     private KillSwitch killSwitch;
     private RecordingAudit audit;
     private IdempotencyStore idempotency;
+    private InMemoryToolExecutionLedger ledger;
 
     @BeforeEach
     void setUp() {
@@ -46,6 +45,9 @@ class GuardedToolCallbackTest {
         killSwitch = new KillSwitch();
         audit = new RecordingAudit();
         idempotency = new Sha256IdempotencyStore();
+        // 用真实的内存实现而不是测试替身：抢占的原子性正是要被测的东西，
+        // 用替身就等于把断言写在被测代码里。
+        ledger = new InMemoryToolExecutionLedger();
     }
 
     // ---------------------------------------------------------- ① 默认拒绝
@@ -62,7 +64,7 @@ class GuardedToolCallbackTest {
                 .hasMessageContaining("not in allowlist");
 
         assertThat(tool.calls).isZero();
-        assertThat(audit.results).isEmpty();
+        assertThat(ledger.size()).as("被拒的调用不该留下幂等记录").isZero();
     }
 
     @Test
@@ -75,7 +77,7 @@ class GuardedToolCallbackTest {
 
         GuardedToolCallback guarded = new GuardedToolCallback(
                 RecordingTool.ok("sneaky_mcp_tool", "x"), engine, killSwitch,
-                autoApprove(), audit, idempotency, ArgClamper.NOOP, "run-1", 1);
+                autoApprove(), audit, idempotency, ledger, ArgClamper.NOOP, "run-1", 1);
 
         assertThatThrownBy(() -> guarded.call("{}")).isInstanceOf(ToolDeniedException.class);
         assertThat(denied).containsExactly("sneaky_mcp_tool:not in allowlist");
@@ -230,6 +232,81 @@ class GuardedToolCallbackTest {
     }
 
     @Test
+    @DisplayName("④ 执行权被抢走且尚无结果时必须失败，绝不并发执行同一个写操作")
+    void inFlightDuplicateFailsInsteadOfDoubleExecuting() {
+        RecordingTool tool = RecordingTool.ok(TOOL, "scaled");
+        GuardedToolCallback guarded = guard(tool, ArgClamper.NOOP, autoApprove());
+        // 模拟另一个实例已经抢到执行权但还没跑完
+        String key = idempotency.keyFor("run-1", 1, TOOL,
+                GuardedToolCallback.canonical("{\"replicas\":3}"));
+        assertThat(ledger.claim(key, TOOL)).isTrue();
+
+        // 二次扩容、二次重启是会出真事故的；"这次调用失败了"只是重试一次。
+        // 两者相权，必须选后者。
+        assertThatThrownBy(() -> guarded.call("{\"replicas\":3}"))
+                .isInstanceOf(ToolDeniedException.class)
+                .hasMessageContaining("duplicate in-flight");
+        assertThat(tool.calls).as("绝不能真的执行").isZero();
+    }
+
+    @Test
+    @DisplayName("④ 并发调用同一个幂等键，只有一个线程能拿到执行权")
+    void concurrentCallsExecuteExactlyOnce() throws Exception {
+        RecordingTool tool = RecordingTool.ok(TOOL, "scaled");
+        GuardedToolCallback guarded = guard(tool, ArgClamper.NOOP, autoApprove());
+        int threads = 16;
+        java.util.concurrent.CyclicBarrier gate = new java.util.concurrent.CyclicBarrier(threads);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(threads);
+        try {
+            java.util.List<java.util.concurrent.Future<String>> futures = new ArrayList<>();
+            for (int i = 0; i < threads; i++) {
+                futures.add(pool.submit(() -> {
+                    gate.await();   // 让所有线程尽量同时冲进 claim
+                    return guarded.call("{\"replicas\":3}");
+                }));
+            }
+            int ok = 0;
+            for (var f : futures) {
+                try {
+                    assertThat(f.get()).isEqualTo("scaled");
+                    ok++;
+                } catch (java.util.concurrent.ExecutionException expected) {
+                    // 抢不到执行权的线程会拿到 ToolDeniedException，这是预期行为
+                    assertThat(expected.getCause()).isInstanceOf(ToolDeniedException.class);
+                }
+            }
+            assertThat(ok).as("必须恰好有一个线程真正执行并成功").isEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(tool.calls).as("并发重试不能导致二次扩容").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("④ 执行失败会释放执行权，同一个请求可以重试")
+    void failureReleasesTheClaimSoRetryIsPossible() {
+        RecordingTool tool = RecordingTool.failing(TOOL, new IllegalStateException("boom"));
+        GuardedToolCallback guarded = guard(tool, ArgClamper.NOOP, autoApprove());
+
+        assertThatThrownBy(() -> guarded.call("{\"replicas\":3}"))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(ledger.size()).as("失败后必须释放，否则这个幂等键就废了").isZero();
+    }
+
+    @Test
+    @DisplayName("④ 审批被拒也会释放执行权——换个审批人应该能重新发起")
+    void rejectedApprovalReleasesTheClaim() {
+        RecordingTool tool = RecordingTool.ok(TOOL, "scaled");
+        GuardedToolCallback guarded = guard(tool, ArgClamper.NOOP,
+                new RecordingGate(Approval.rejected("alice", "现在不行")));
+
+        guarded.call("{\"replicas\":3}");
+
+        assertThat(tool.calls).isZero();
+        assertThat(ledger.size()).as("审批被拒不等于执行过了").isZero();
+    }
+
+    @Test
     @DisplayName("④ 规范化只去空白，不改变语义")
     void canonicalStripsWhitespaceOnly() {
         assertThat(GuardedToolCallback.canonical("{ \"a\" : 1 , \"b\" : 2 }"))
@@ -300,7 +377,7 @@ class GuardedToolCallbackTest {
         assertThat(audit.events).anyMatch(e -> e.startsWith("SUCCESS:"));
         assertThat(audit.lastResult).isEqualTo("cpu=95%");
         assertThat(audit.lastArgs).isEqualTo("{\"service\":\"order\"}");
-        assertThat(audit.results).hasSize(1);
+        assertThat(ledger.size()).isEqualTo(1);
     }
 
     @Test
@@ -314,7 +391,7 @@ class GuardedToolCallbackTest {
 
         assertThat(audit.events).anyMatch(e -> e.startsWith("FAILURE:"));
         assertThat(audit.lastError).isSameAs(boom);
-        assertThat(audit.results).as("失败的执行不能被当成可重放的成功结果").isEmpty();
+        assertThat(ledger.size()).as("失败的执行不能被当成可重放的成功结果").isZero();
     }
 
     // ---------------------------------------------------------- 关卡顺序
@@ -364,7 +441,7 @@ class GuardedToolCallbackTest {
         RecordingTool tool = RecordingTool.ok(READ_TOOL, "metrics");
 
         GuardedToolCallback guarded = GuardedToolCallback.readOnly(
-                tool, policyEngine, killSwitch, audit, idempotency, "run-1", 1);
+                tool, policyEngine, killSwitch, audit, idempotency, ledger, "run-1", 1);
 
         assertThat(guarded.call("{}")).isEqualTo("metrics");
         assertThat(tool.calls).isEqualTo(1);
@@ -385,12 +462,12 @@ class GuardedToolCallbackTest {
 
     private GuardedToolCallback guard(ToolCallback delegate, ArgClamper clamper, ApprovalGate gate) {
         return new GuardedToolCallback(delegate, policyEngine, killSwitch, gate,
-                audit, idempotency, clamper, "run-1", 1);
+                audit, idempotency, ledger, clamper, "run-1", 1);
     }
 
     private GuardedToolCallback guardStep(ToolCallback delegate, int step) {
         return new GuardedToolCallback(delegate, policyEngine, killSwitch, autoApprove(),
-                audit, idempotency, ArgClamper.NOOP, "run-1", step);
+                audit, idempotency, ledger, ArgClamper.NOOP, "run-1", step);
     }
 
     private static ApprovalGate autoApprove() {
@@ -441,7 +518,6 @@ class GuardedToolCallbackTest {
 
     /** 记录全部审计事件的假审计日志，同时充当幂等结果存储。 */
     private static final class RecordingAudit implements ToolAuditLog {
-        final Map<String, String> results = new HashMap<>();
         final List<String> events = new ArrayList<>();
         String lastClampedRaw;
         String lastClampedNew;
@@ -449,16 +525,6 @@ class GuardedToolCallbackTest {
         String lastResult;
         String lastArgs;
         Throwable lastError;
-
-        @Override
-        public boolean has(String idempotencyKey) {
-            return results.containsKey(idempotencyKey);
-        }
-
-        @Override
-        public String resultOf(String idempotencyKey) {
-            return results.get(idempotencyKey);
-        }
 
         @Override
         public void recordApproval(String idempotencyKey, Approval approval) {
@@ -469,7 +535,6 @@ class GuardedToolCallbackTest {
         @Override
         public void recordSuccess(String idempotencyKey, String toolName, String args, String result) {
             events.add("SUCCESS:" + idempotencyKey);
-            results.put(idempotencyKey, result);
             lastResult = result;
             lastArgs = args;
         }

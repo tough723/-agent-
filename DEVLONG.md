@@ -21,7 +21,7 @@
 | **I5** | 高危配置清单不可被配置修改 | 硬编码在 `ConfigAccessPolicy.HIGH_RISK_KEYS` |
 | **I6** | `oncall-domain` / `oncall-config` 生产代码零外部依赖 | 只用 JDK；H2 仅 test scope |
 | **I7** | `app_config` 只有墓碑行，没有真删除 | `JdbcConfigStore.remove()` 写 NULL |
-| **I8** | 幂等的最终保证在数据库唯一约束，不在应用层 | `agent_step.idempotency_key UNIQUE`（待落地） |
+| **I8** | 幂等的最终保证在数据库唯一约束，不在应用层 | `tool_execution_claim` 主键（V7，**已落地**）+ `JdbcToolExecutionLedger.claim()` 靠主键冲突抢占。**不是** `uq_agent_step_idem`——那条约束的粒度是「步」，比工具调用粗，管不住它 |
 | **I9** | 答案必须通过 `CitationVerifier` 才能下发，因此**不流式吐 token** | SSE 承载阶段事件，`answer` 原子下发 |
 | **I10** | 评测跑批 `temperature` 必须为 0 | 配置默认 0.0 + 说明文案 |
 | **I11** | AI 永远不是责任主体 | 放权模型 S0–S3 每级都有明确的人 |
@@ -156,6 +156,9 @@
 | **在文档里写"未验证风险清单"，而不是加个数据库容器** | V2–V6 写完后我列了四条"未经验证的风险"。CI 里加一个 `pgvector/pgvector:pg16` 的 service 容器实测，**四条全部证伪**，一次通过。风险清单只能让人知道有风险，容器能让人知道没有风险 |
 | **为了塞进一个配置项，差点去放宽全类型共用的默认值校验** | `mcp.allowed-servers` 用 `STRING_LIST` + 空默认值，被 `ConfigRegistry` 的自检拒绝（空串对任何类型都判为不可解析）。第一反应是"校验器太严"，但那条校验是对的：**默认值本身必须合法，否则"用默认值启动"这条路就是坏的**。真正的错误是这个键不该存在——它与工具白名单是两个事实来源。删键，不改校验器 |
 | **给"连接"加了治理，却没发现"授权"根本没有治理** | 把 `mcp.allowed-servers` 放进高危清单，看起来"加 server 要两人同意"了。但决定远端工具能不能用的是 `ToolPolicy`，而工具白名单至今没有双人复核与审计。锁装在了不承重的门上。已记为 §9 第四个未解决问题 |
+| **说"I8 的物理保证已经由 `uq_agent_step_idem` 提供"** | **错**。那是 `agent_step` 上的唯一约束，粒度是**步**；幂等键是 `runId\|step\|toolName\|canonicalArgs`，粒度比一步细（一步内可以有多次工具调用）。它约束不到工具执行。真正的保证是 V7 的 `tool_execution_claim` 主键。**教训：说"某条约束保证了 X"之前，先比对约束的粒度和 X 的粒度** |
+| **第④关写成了"先查后写"，还以为它是幂等的** | 原实现 `if (auditLog.has(key)) return resultOf(key);` 再执行、再 `recordSuccess`。两个线程可以同时通过 `has()` 检查然后都执行；多实例下连 `has()` 都不共享。**唯一成立的写法是让抢占本身成为一次原子插入**（内存版 `putIfAbsent`，JDBC 版主键冲突）。数据库的唯一约束是**探测器**，不是**阻止器**——除非冲突发生在执行之前 |
+| **`release` 一开始写成了无条件 DELETE** | 那样一次迟到的失败回调会删掉已经 `COMPLETED` 的行，成功结果丢失，下次重试真的再执行一遍。必须带 `state='CLAIMED'` 条件。**凡是"删除以允许重试"的操作，都要先问"它会不会删掉已经成功的记录"** |
 
 ---
 
@@ -193,10 +196,11 @@
 
 ---
 
-## 9. 还没解决的四个问题
+## 9. 还没解决的五个问题
 
 前三个不解决，M4 之后会卡住。**不是技术问题，是信息缺口。**
-第四个是本轮实现 MCP 纳管时暴露出来的，属于**治理缺口**。
+第四个是实现 MCP 纳管时暴露出来的**治理缺口**；
+第五个是做幂等账本时对着 V2 的 DDL 查出来的**接口与表结构不匹配**。
 
 | 问题 | 影响 | 需要什么 |
 |------|------|---------|
@@ -204,6 +208,7 @@
 | **CMDB 的告警→服务映射** | 没有映射就无法自动定位影响面，也无法 @ 对人 | 确认 CMDB 是否有这个关系，覆盖率多少 |
 | **成本模型的真实聚合率** | 现在的 15% 是**假设值**，成本承诺全是空的 | W3 用真实数据修正 |
 | **工具白名单（`ToolPolicy`）没有变更治理路径** | 白名单是整个安全模型的事实来源——加一条 MCP 工具策略就等于放行一个远端工具。但配置治理那套（可见性分级 / 双人复核 / 待复核单 / 审计）只覆盖 `OnCallConfigRegistry`，**不覆盖 `ToolPolicyEngine`**。现在加策略是改代码或改 DB，没有第二人复核，也没有"谁在什么时候放行了什么"的可查记录 | 把工具策略纳入与配置同等的治理：变更走待复核单 + 双人 + 审计。这一条的优先级高于任何新功能 |
+| **`ToolAuditLog` 的方法签名喂不满 `tool_audit_log` 的必填列** | V2 的 `tool_audit_log` 要求 `trace_id` / `tool_source` / `risk_level` / `args_masked` / `gate_outcome` 全部 `NOT NULL`，而 `recordSuccess(idempotencyKey, toolName, args, result)` **一个都给不出**：没有 trace，分不清 LOCAL 与 MCP，没有风险级，`gate_outcome` 只能靠方法名反推（`recordClamped` 与 `recordApproval` 之间还分不清 `PASSED` / `CLAMPED`），`args` 还是未脱敏原文而列名叫 `args_masked`。⇒ **`JdbcToolAuditLog` 现在写不出来**；硬写只能往必填列塞假值，而一张字段造假的审计表比没有审计更糟 | 把审计上下文（trace / source / riskLevel / gateOutcome / 脱敏后的参数）作为显式参数传进来，而不是让实现去猜。会动到 `GuardedToolCallback` 全部审计调用点，属独立一轮 |
 
 > 第四条是这么被发现的：我本来加了一个 `mcp.allowed-servers` 配置项并把它放进
 > 高危清单，以为这样就"加 server 要两人同意"了。但那管的是**连接**，
@@ -217,12 +222,19 @@
 见 [DEVELOPMENT.md](DEVELOPMENT.md) 的 M2 起。
 
 > **M1 的安全部分已完成，但不等于 M1 全部完成。**
-> I14（MCP 显式纳管）是 M1 里唯一的安全缺口，已堵。
+> I14（MCP 显式纳管）与 I8（幂等的物理保证）都已堵上。
 > 剩余 5 项是工程收尾：`JsonScaleArgsAdapter`、`JdbcToolAuditLog`、
 > `canonical()` 升级为 Jackson `TreeMap` 规范化、`WecomApprovalGate`、
-> `AutonomyLevel` 接入调用链。其中只有 `JdbcToolAuditLog` 带安全含义
-> （内存版在多实例下幂等会失效），而它依赖的数据库约束
-> `uq_agent_step_idem` 已经建好并在真实 PostgreSQL 上验证过。
+> `AutonomyLevel` 接入调用链。
+>
+> **更正一处此前写错的话**：我曾说这 5 项里只有 `JdbcToolAuditLog` 带安全含义、
+> 理由是"内存版在多实例下幂等会失效"，并说它依赖 `uq_agent_step_idem`。
+> 两点都不对——幂等的多实例问题已由 `tool_execution_claim`（V7）+
+> `JdbcToolExecutionLedger` 独立解决，与审计表无关；而 `uq_agent_step_idem`
+> 的粒度是"步"，本来就管不到工具调用。
+> `JdbcToolAuditLog` 仍然带安全含义，但理由变成了**审计本身在多实例下的持久性**
+> （内存版重启即丢，出事后无从追责），而且它现在**被 §9 第五项卡住**：
+> 接口签名给不出表的必填列，必须先改接口。
 
 当前建议顺序分两条独立的轨道，可以并行：
 
@@ -253,19 +265,27 @@
   F9 的表述与文档里原先写的不一样，见 `ArchitectureRuleTest` 的类注释：
   「禁止在网关外调 `ToolCallback.call`」在静态分析下不可判定，
   能判定的是实现类的集合。
-- **M2 的 9 张表 DDL**（V2–V5）+ **轻量本体 4 张表**（V6），共 15 张。
-  **全部在真实 PostgreSQL 16 + pgvector 上执行通过，重复执行也通过**
-  （CI job `DDL on PostgreSQL 16 + pgvector`，run `33979708322`；
+- **M2 的 9 张表 DDL**（V2–V5）+ **轻量本体 4 张表**（V6）
+  + **幂等账本 1 张**（V7），共 16 张。
+  V1–V6 **全部在真实 PostgreSQL 16 + pgvector 上执行通过，重复执行也通过**
+  （CI job `DDL on PostgreSQL 16 + pgvector`，run `33983334064`；
   `information_schema` 报 18 张 = 15 张逻辑表 + 3 个 DEFAULT 分区）。
-  两个数据库级不变量已落到约束上：`uq_agent_step_idem`（I8 幂等的物理保证）
-  与 `chk_approval_not_self`（I3 "不能复核自己"），
-  且这两个约束的存在性已写成 CI 断言。
+  V7 是本轮新增，**尚未经 CI 实测**，跑过后应为 19 张 = 16 张逻辑表 + 3 个分区。
+  数据库级不变量已落到约束上：`chk_approval_not_self`（I3 "不能复核自己"）、
+  `tool_execution_claim` 的主键（**I8 幂等的物理保证**）、`chk_claim_state`，
+  外加 `uq_agent_step_idem`（步级幂等，**不覆盖工具调用**），
+  这四条的存在性已写成 CI 断言。
   > 刚写完时它们从未被任何数据库执行过（沙箱无 PostgreSQL，H2 不支持
   > `PARTITION BY RANGE` 与 `vector(1024)`）。**与其在文档里写风险清单，
   > 不如加一个数据库 service 容器**——清单只能让人知道有风险，
   > 容器能让人知道没有风险。这个 job 现在是硬失败。
 - **`oncall-ontology` 模块** —— 概念层 / 关系层 / 4 条规则（R1–R4），
   有界遍历 + 实体链接，JDBC 实现在真实 H2 上测过。
+- **幂等账本 `tool_execution_claim`（V7）+ `ToolExecutionLedger` 三件套** ——
+  给不变量 I8 补上真正的物理保证。原先第④关是"先查后写"+ 内存态，
+  多实例与并发下都不成立（详见 [DEVELOPMENT.md](DEVELOPMENT.md) §1.5）。
+  24 个新用例，其中并发抢占在内存与 H2 上各测一遍，
+  H2 的建表语句直接从 V7 文件里抽——测的是生产要执行的那份 DDL，不是副本。
 - **`McpToolRegistrar`** —— 堵住不变量 I14（M1 里唯一的安全缺口）。
   MCP 工具只能显式纳管后进入，统一改名 `mcp:<server>:<tool>` 再走完整七道关卡；
   `mcp.toolcallback-enabled` 默认 false 且是 BACKEND_ONLY。22 个用例。
