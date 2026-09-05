@@ -152,6 +152,7 @@
 | **修正后又只给了成本理由，且概念模型有错** | 被追问"是否真的掌握这套方法论"后用 CQ 与 OntoClean 重做，查出 `CoreService` 不该是子类（非刚性），已改为 `criticality` 属性。否决 OWL 的真正理由是**语义不匹配**（OWA / 单调性 / 变更速度），不是成本 |
 | **F9 的原始表述根本不可静态判定** | 文档里写的是"用 ArchUnit 禁止在网关之外直接调用 `ToolCallback.call`"。但编排层与 Spring AI 内部**必须**调 `call`，ArchUnit 无法区分"调的是被包装过的实例"还是"裸实例"——那是运行时属性。改成约束**实现类的集合**：只要 `GuardedToolCallback` 是唯一实现，编排层手里的任何 `ToolCallback` 就必然是被包装过的。**教训：写架构约束前先问"这个性质静态可见吗"** |
 | **F2 的包范围把 REST 层圈了进去** | `oncall-config-admin` 的包名是 `com.oncall.config.admin`，不是独立顶层包。只写 `com.oncall.config..` 会把控制器一起算进"零依赖模块"，第一次跑红了 58 处。加 `resideOutsideOfPackages` 排除。**规则第一次跑就报出大量违规时，先怀疑范围写错，不是先怀疑代码** |
+| **record 里声明了与零参方法同名的静态工厂**（第二次踩） | `record ReviewOutcome(verdict, message)` 里既有实例方法 `boolean allowed()`，又写了 `static ReviewOutcome allowed()` —— 同名同参数个数、只有返回类型不同，Java 直接编译不过（`method allowed() is already defined`）。`Approval` 里踩过一次同样的坑。**规则：record 的静态工厂一律用动词命名（`allow` / `granted` / `rejected`），永远不要用形容词或与组件同名的词。括号平衡自检抓不到，只有真编译能抓** |
 | **record 加了字段，漏改直接 `new` 的调用点** | `RuleContext` 把 `riskLevel` 插到第 4 位，测试里那个绕过工厂方法直接 `new` 的调用点没跟着改，编译失败。**括号平衡、括号配对这类自检抓不到参数个数错误——只有真编译能抓** |
 | **在文档里写"未验证风险清单"，而不是加个数据库容器** | V2–V6 写完后我列了四条"未经验证的风险"。CI 里加一个 `pgvector/pgvector:pg16` 的 service 容器实测，**四条全部证伪**，一次通过。风险清单只能让人知道有风险，容器能让人知道没有风险 |
 | **为了塞进一个配置项，差点去放宽全类型共用的默认值校验** | `mcp.allowed-servers` 用 `STRING_LIST` + 空默认值，被 `ConfigRegistry` 的自检拒绝（空串对任何类型都判为不可解析）。第一反应是"校验器太严"，但那条校验是对的：**默认值本身必须合法，否则"用默认值启动"这条路就是坏的**。真正的错误是这个键不该存在——它与工具白名单是两个事实来源。删键，不改校验器 |

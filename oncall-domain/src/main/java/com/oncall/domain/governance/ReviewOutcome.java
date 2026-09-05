@@ -25,7 +25,12 @@ public record ReviewOutcome(ReviewVerdict verdict, String message) {
         return verdict == ReviewVerdict.ALLOWED;
     }
 
-    static ReviewOutcome allowed() {
+    // 名字刻意是 allow() 而不是 allowed()：
+    // record 组件 verdict 会隐式生成 verdict() 访问器，而上面还有一个
+    // 实例方法 boolean allowed()。再声明 static ReviewOutcome allowed()
+    // 就是「同名同参数个数、只有返回类型不同」，Java 直接编译不过
+    // （method allowed() is already defined）。静态工厂一律用动词命名。
+    static ReviewOutcome allow() {
         return new ReviewOutcome(ReviewVerdict.ALLOWED, "");
     }
 

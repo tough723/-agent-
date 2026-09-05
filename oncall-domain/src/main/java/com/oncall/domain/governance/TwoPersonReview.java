@@ -74,7 +74,7 @@ public final class TwoPersonReview {
                             + "，现在 " + show(request.currentValue())
                             + "），本次复核已失效，请重新发起");
         }
-        return ReviewOutcome.allowed();
+        return ReviewOutcome.allow();
     }
 
     private static String label(ReviewRequest r) {
