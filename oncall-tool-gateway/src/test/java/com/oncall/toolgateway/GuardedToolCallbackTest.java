@@ -250,7 +250,7 @@ class GuardedToolCallbackTest {
     }
 
     @Test
-    @DisplayName("④ 并发调用同一个幂等键，只有一个线程能拿到执行权")
+    @DisplayName("④ 并发调用同一个幂等键，工具只被真正执行一次")
     void concurrentCallsExecuteExactlyOnce() throws Exception {
         RecordingTool tool = RecordingTool.ok(TOOL, "scaled");
         GuardedToolCallback guarded = guard(tool, ArgClamper.NOOP, autoApprove());
@@ -265,21 +265,32 @@ class GuardedToolCallbackTest {
                     return guarded.call("{\"replicas\":3}");
                 }));
             }
-            int ok = 0;
+            int replayed = 0;
+            int denied = 0;
             for (var f : futures) {
                 try {
                     assertThat(f.get()).isEqualTo("scaled");
-                    ok++;
+                    replayed++;
                 } catch (java.util.concurrent.ExecutionException expected) {
-                    // 抢不到执行权的线程会拿到 ToolDeniedException，这是预期行为
+                    // 抢不到执行权、且此时还没有可重放结果的线程会拿到 ToolDeniedException
                     assertThat(expected.getCause()).isInstanceOf(ToolDeniedException.class);
+                    denied++;
                 }
             }
-            assertThat(ok).as("必须恰好有一个线程真正执行并成功").isEqualTo(1);
+            // 【不要在这里断言 replayed == 1】
+            // 这条断言我第一版就是这么写的，CI 上炸成 "expected: 1 but was: 16"。
+            // 原因是：抢不到执行权的线程会走 resultOf()，如果赢家此刻已经 complete()，
+            // 它们拿到的就是上次的结果并原样返回 —— 这是**期望行为**（重放），不是缺陷。
+            // 于是 replayed 落在 1..threads 之间，取决于赢家什么时候写完结果，
+            // 断言它等于 1 等于在断言一个时序，必然随机红。
+            // 真正确定的只有两件事，分别断言：
+            assertThat(replayed + denied).as("每个线程必须落在两种确定状态之一").isEqualTo(threads);
+            assertThat(replayed).as("至少有一个线程拿到结果").isPositive();
         } finally {
             pool.shutdownNow();
         }
-        assertThat(tool.calls).as("并发重试不能导致二次扩容").isEqualTo(1);
+        // 这一条才是承重的：并发重试不能导致二次扩容。
+        assertThat(tool.calls).as("16 个线程同时进来，工具只能被真正执行一次").isEqualTo(1);
     }
 
     @Test
