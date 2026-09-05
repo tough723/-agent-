@@ -214,7 +214,15 @@
 
 ## 10. 下一步
 
-见 [DEVELOPMENT.md](DEVELOPMENT.md) 的 M2 起。**M1 已全部完成。**
+见 [DEVELOPMENT.md](DEVELOPMENT.md) 的 M2 起。
+
+> **M1 的安全部分已完成，但不等于 M1 全部完成。**
+> I14（MCP 显式纳管）是 M1 里唯一的安全缺口，已堵。
+> 剩余 5 项是工程收尾：`JsonScaleArgsAdapter`、`JdbcToolAuditLog`、
+> `canonical()` 升级为 Jackson `TreeMap` 规范化、`WecomApprovalGate`、
+> `AutonomyLevel` 接入调用链。其中只有 `JdbcToolAuditLog` 带安全含义
+> （内存版在多实例下幂等会失效），而它依赖的数据库约束
+> `uq_agent_step_idem` 已经建好并在真实 PostgreSQL 上验证过。
 
 当前建议顺序分两条独立的轨道，可以并行：
 
@@ -258,6 +266,6 @@
   > 容器能让人知道没有风险。这个 job 现在是硬失败。
 - **`oncall-ontology` 模块** —— 概念层 / 关系层 / 4 条规则（R1–R4），
   有界遍历 + 实体链接，JDBC 实现在真实 H2 上测过。
-- **`McpToolRegistrar`** —— M1 最后一项，堵住不变量 I14。
+- **`McpToolRegistrar`** —— 堵住不变量 I14（M1 里唯一的安全缺口）。
   MCP 工具只能显式纳管后进入，统一改名 `mcp:<server>:<tool>` 再走完整七道关卡；
-  `mcp.toolcallback-enabled` 默认 false 且是 BACKEND_ONLY。
+  `mcp.toolcallback-enabled` 默认 false 且是 BACKEND_ONLY。22 个用例。

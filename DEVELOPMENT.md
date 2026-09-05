@@ -13,7 +13,7 @@
 
 `.github/workflows/ci.yml` 在每次 push 时用 JDK 17 + Maven 3.9.16 真实编译并跑测试，
 另有一个独立的 job 用真实 PostgreSQL 16 + pgvector 跑 DDL。
-**最近一次全绿**：run `33980135605` / conclusion `success`（两个 job 都是）。
+**最近一次全绿**：run `33983162216` / conclusion `success`（两个 job 都是）。
 
 | 步骤 | 结果 |
 |------|------|
@@ -26,11 +26,11 @@
 | Build & test `oncall-tool-gateway`（依赖 Spring AI） | ✅ |
 | Build & test `oncall-ontology`（轻量本体，纯 Java，零外部依赖） | ✅ |
 | Build & test `oncall-archtest`（架构约束 F1–F4、F9） | ✅ `archunit:1.4.2` |
-| Assert tests actually ran | ✅ 见本节末尾的最新数字 |
+| Assert tests actually ran | ✅ `报告文件=20 测试总数=280 失败=0 错误=0 跳过=0` |
 | **DDL on PostgreSQL 16 + pgvector** | ✅ V1–V6 各 6/6，**重复执行也 6/6**，表数 **18** |
 
 **测试数字对得上**：20 个报告文件对应 20 个测试类，280 = 已有 184 +
-`oncall-ontology` 59 + `oncall-archtest` 8。
+`oncall-ontology` 59 + `oncall-archtest` 8 + MCP 纳管等本轮新增 29。
 
 **DDL job 的两个断言**：`information_schema` 表数必须恰好 18
 （15 张逻辑表 + 3 个 DEFAULT 分区），`uq_agent_step_idem` 与
@@ -243,11 +243,50 @@ OWL 与 SWRL 都单调、无否定即失败，表达不了「除非…否则…�
 > 加这个 job 之前它们从未被任何数据库执行过——H2 不支持 `PARTITION BY RANGE`
 > 与 `vector(1024)`。详见 [5.数据库设计文档.md](5.数据库设计文档.md) §8.2。
 
+
+### 1.4 MCP 工具显式纳管（M1 收尾，堵住不变量 I14）
+
+```
+oncall-tool-gateway/
+└── src/main/java/com/oncall/toolgateway/mcp/
+    ├── McpToolCatalog.java          端口：某个 server 当前提供哪些工具
+    ├── StaticMcpToolCatalog.java    静态目录实现（S0 阶段它就是正确实现，不只是替身）
+    ├── McpToolRegistrar.java        纳管器：白名单过滤 + 改名 + 交给守卫
+    └── McpRegistrationResult.java   接受/拒绝及原因
+└── src/test/java/.../mcp/           22 个用例 + StubToolCallback
+```
+
+**堵的洞**：原方案给工具方法打 `@RiskLevel` 注解，但 MCP 工具是运行期从远端
+server 发现的对象，不是本项目的 Java 类，打不了注解 —— 于是 MCP 工具绕过整套
+风险分级。更糟的是 Spring AI 的 MCP client **默认会**自动把发现的工具注册给模型
+（`toolcallback.enabled` 默认 `true`），也就是"什么都不做"的情况下
+远端 server 就能让模型获得任意工具。
+
+| 关键设计 | 为什么 |
+|---------|--------|
+| `mcp.toolcallback-enabled` 默认 `false`，且 `BACKEND_ONLY` | 与框架默认值相反。放前端等于给界面加一个"关闭全部安全关卡"的按钮 |
+| 未纳管的工具**拒绝并记录**，不静默丢弃 | "server 悄悄多了个工具"正是工具投毒最典型的信号，静默丢弃等于没人知道发生过 |
+| 改名 `mcp:<server>:<tool>` 放在 `GuardedToolCallback` 里，不另做装饰器 | 模型看到的名字与策略判定用的名字必须是同一个值。放同一个类里由同一字段同一方法产出，不可能被改岔；拆两层装饰器就多一处包装顺序出错的机会 |
+| 前缀格式**不做成配置项** | 可配置就等于允许把两个 server 的名字空间合并，从而用 A 的纳管结果授权 B 的工具 |
+| server 集合从工具策略反推（`ToolPolicyEngine.mcpServers()`），不另配名单 | 两份清单必然出现互相矛盾的状态，且两种都不报错。单一事实来源不可能与自己矛盾 |
+| catalog 抛异常时返回 `unavailable` 而不是上抛 | 一个 MCP server 挂掉不该让整个 Agent 起不来；但必须记审计，否则运维只会看到"工具变少了" |
+
+**前缀是安全边界，不是命名习惯** —— 有测试直接证明：只注册原始名的策略不能给
+MCP 工具背书；纳管 `cmdb` 的 `restart` 不等于纳管 `billing` 的 `restart`；
+工具名含 `:` 被拒（否则可伪造 `mcp:other:tool` 冒用别人的纳管结果）；
+`LOCAL` 策略不能给 MCP 工具背书。
+
+> **本轮暴露出一个更严重的缺口**（已记入 [DEVLONG.md](DEVLONG.md) §9 第四项）：
+> 工具白名单 `ToolPolicy` 是整个安全模型的事实来源，但它**没有变更治理**——
+> 没有双人复核，没有"谁在什么时候放行了什么"的可查记录。
+> 配置治理那一套只覆盖 `OnCallConfigRegistry`。
+> 这条的优先级高于任何新功能。
+
 ---
 
 ## 二、下一步：按模块推进（M1 → M7）
 
-### M1 — 完成 tool-gateway 的落地实现（1 周）⭐ 当前在这
+### M1 — 完成 tool-gateway 的落地实现（1 周）🟡 安全部分已完成，剩 5 项工程收尾
 
 **已有**：接口 + 策略引擎 + 装饰器骨架 + **3 个纯 Java 落地实现（本轮新增）**。
 
@@ -270,10 +309,12 @@ OWL 与 SWRL 都单调、无否定即失败，表达不了「除非…否则…�
 | `JdbcToolAuditLog` | 落 `tool_audit_log` 表，`idempotency_key` 加 UNIQUE 约束。**内存版在多实例下幂等会失效** |
 | 规范化升级 | `canonical()` 现在只去空白；应改为 Jackson 读 `TreeMap` 再序列化，消除 key 顺序影响 |
 | `WecomApprovalGate` | 企微卡片 + `expires_at` + 超时升级 + 双人复核 |
-| `McpToolRegistrar` | 关掉自动注册后显式纳管 + 打 `mcp:<server>:` 前缀 + 启动快照比对 |
 | `AutonomyLevel` 接入调用链 | 与 `KillSwitch` 取交集：先 `assertAllowed()` 再 `canAutoExecute()` |
 
-**已完成**：`GuardedToolCallbackTest`（24 个用例，见下）。
+**已完成**：`GuardedToolCallbackTest`（24 个用例，见下）、
+**`McpToolRegistrar`**（22 个用例，见 §1.4）——M1 里唯一的**安全**缺口已堵。
+上面 5 项剩余的都是工程收尾，不是安全缺口：`JdbcToolAuditLog` 是唯一有安全含义的一项
+（内存版在多实例下幂等会失效），但它的数据库约束 `uq_agent_step_idem` 已经建好并验证过。
 
 **验收**（对应修复方案 F1.7）：
 - [ ] 未注册工具 → `ToolDeniedException` + 有拒绝审计
