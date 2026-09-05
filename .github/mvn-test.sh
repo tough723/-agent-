@@ -26,6 +26,13 @@ if [ "$rc" -ne 0 ]; then
   grep -E "^\[ERROR\]|error:|BUILD FAILURE|cannot find symbol|符号|Tests run:.*(Failures: [1-9]|Errors: [1-9])|<<< (FAILURE|ERROR)" "$log" \
     | head -80 \
     | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/^/::error::/' || true
+
+  # 只有首行不够：ERROR（抛异常）和 FAILURE（断言不符）的处置完全不同，
+  # 而区分它们要看栈。这里把失败测试的 surefire 报告头部也发出来。
+  while IFS= read -r rpt; do
+    echo "===== 失败测试报告: $rpt ====="
+    head -50 "$rpt" | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/^/::error::/' || true
+  done < <(grep -lE "Failures: [1-9]|Errors: [1-9]" "$module"/target/surefire-reports/*.txt 2>/dev/null || true)
 fi
 
 echo "----- ${module} 日志末尾 -----"
