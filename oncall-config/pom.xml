@@ -22,4 +22,18 @@
     持久化（JdbcConfigStore）与热推送（配置中心监听）放在 infra 层实现 ConfigStore 端口，
     本模块只定义端口。
   -->
+
+  <dependencies>
+    <!--
+      仅测试作用域：JDBC 实现需要真实数据库来验证 SQL，用假的 Connection 测等于没测。
+      生产代码只用 JDK 自带的 javax.sql / java.sql，所以「零外部依赖」这条约束不受影响。
+      版本 2.3.232 已确认存在于 Maven Central。
+    -->
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <version>2.3.232</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
 </project>

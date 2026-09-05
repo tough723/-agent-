@@ -17,7 +17,7 @@ import java.time.Duration;
 public interface ApprovalGate {
 
     /**
-     * 阻塞等待审批结果，超时返回 {@link Approval#expired()}。
+     * 阻塞等待审批结果，超时返回 {@link Approval#timedOut()}。
      *
      * <p>实现方职责：
      * <ol>
