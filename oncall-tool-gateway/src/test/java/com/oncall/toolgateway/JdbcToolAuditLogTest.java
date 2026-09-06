@@ -99,7 +99,10 @@ class JdbcToolAuditLogTest {
             for (String col : notNullColumns) {
                 Object v = rs.getObject(col);
                 assertThat(v).as("NOT NULL 列 %s 必须被填上", col).isNotNull();
-                if (v instanceof String s) {
+                if (v instanceof String s && !"args_masked".equals(col)) {
+                    // args_masked 例外：被策略默认拒绝的调用根本没走到参数那一步，
+                    // 此时空串是「没有参数」这个事实，不是占位符。
+                    // 其余各列若为空串，就说明实现往里塞了假值。
                     assertThat(s).as("NOT NULL 列 %s 不能是占位空串", col).isNotEmpty();
                 }
             }

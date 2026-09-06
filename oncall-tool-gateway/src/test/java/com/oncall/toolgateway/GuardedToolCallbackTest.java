@@ -450,7 +450,13 @@ class GuardedToolCallbackTest {
         // kill switch 拦下必须留痕——这是原先缺失的一条：
         // 所有审计调用点都写在放行之后，于是最该记录的安全事件反而没被记录。
         assertThat(audit.countOf(GateOutcome.DENIED)).as("kill switch 拦下必须落审计").isEqualTo(1);
-        assertThat(audit.last(GateOutcome.DENIED).deniedReason()).contains("write tool blocked");
+        // 这个用例把模式设成 OFF，所以文案是「agent disabled」而不是
+        // READ_ONLY 分支的「write tool blocked」——两条分支要能被审计区分出来。
+        assertThat(audit.last(GateOutcome.DENIED).deniedReason())
+                .isEqualTo("agent disabled: mode=OFF");
+        assertThat(audit.last(GateOutcome.DENIED).riskLevel())
+                .as("被 kill switch 拦下的这次调用，风险级要照实记")
+                .isEqualTo(RiskLevel.HIGH);
     }
 
     @Test
