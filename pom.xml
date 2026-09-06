@@ -69,6 +69,12 @@
       而 archtest 要能看到它的字节码（F12 断言"评测代码不得被生产代码依赖"）。
     -->
     <module>oncall-eval</module>
+    <!--
+      装配层（M2）。放在最后但 archtest 之前：
+      它站在依赖图最顶端（要同时引 tool-gateway 等），
+      而 archtest 必须能看到它的字节码——否则新增的生产包会被架构测试静默跳过。
+    -->
+    <module>oncall-app</module>
     <!-- 无生产代码，只有测试：架构约束（含基石 F9）。必须最后，它依赖全部模块。 -->
     <module>oncall-archtest</module>
   </modules>

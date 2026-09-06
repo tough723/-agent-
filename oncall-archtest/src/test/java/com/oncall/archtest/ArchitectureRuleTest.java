@@ -40,7 +40,8 @@ class ArchitectureRuleTest {
             "com.oncall.tooladmin",
             "com.oncall.agent",
             "com.oncall.ontology",
-            "com.oncall.eval"
+            "com.oncall.eval",
+            "com.oncall.app"
     };
 
     /**
@@ -136,6 +137,9 @@ class ArchitectureRuleTest {
                 "没扫到配置注册表，说明 com.oncall.config 不在扫描范围内");
         assertTrue(production.contain("com.oncall.ontology.Ontology"),
                 "没扫到本体门面，说明 com.oncall.ontology 不在扫描范围内");
+        assertTrue(production.contain("com.oncall.app.ToolGatewayAssembly"),
+                "没扫到装配层，说明 com.oncall.app 不在扫描范围内"
+                        + "（或 oncall-archtest 没有依赖 oncall-app）");
     }
 
     @Test

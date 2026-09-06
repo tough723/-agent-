@@ -72,6 +72,16 @@
       <artifactId>oncall-eval</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!--
+      装配层。必须显式依赖：ArchUnit 的 ClassFileImporter 只扫编译期可见的字节码，
+      少了这一条，importPackages("com.oncall.app") 会扫到零个类，
+      而所有 noClasses() 规则在空集合上都是**真**——规则会静默空转通过。
+    -->
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-app</artifactId>
+      <version>${project.version}</version>
+    </dependency>
 
     <!--
       ToolCallback / ToolDefinition 需要出现在编译期，

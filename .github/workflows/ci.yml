@@ -88,6 +88,11 @@ jobs:
       - name: Build & test oncall-eval (L3 评测：EXECUTE 召回率硬门槛)
         run: ./.github/mvn-test.sh oncall-eval
 
+      # 装配层。必须在 archtest 之前：archtest 要能扫到 com.oncall.app，
+      # 否则新增的生产包会被架构测试静默跳过（CI 显式枚举模块 ⇒ 漏了不会报错）。
+      - name: Build & test oncall-app (装配层：夹紧链真正被 new 出来)
+        run: ./.github/mvn-test.sh oncall-app
+
       # 必须排在最后：F9 要能看到网关以外的代码，它依赖全部模块。
       # 这个模块没有生产代码，只有架构约束测试。
       - name: Build & test oncall-archtest (架构约束 F1-F4、F9-F12)

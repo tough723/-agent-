@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.oncall</groupId>
+    <artifactId>oncall-agent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>oncall-app</artifactId>
+  <name>oncall-app</name>
+
+  <!--
+    装配层（M2）。
+
+    为什么必须单独一个模块，而不是塞进某个已有模块：
+      装配的职责是「把各层new出来并接上」，它天然要同时依赖
+      tool-gateway / agent-core / ontology / config。
+      把这种依赖收进任何一个下层模块，都会当场制造环：
+        - 放进 tool-gateway ⇒ 网关反向依赖编排层；
+        - 放进 agent-core   ⇒ F11 明确禁止 agent.llm/agent.prompt 依赖 toolgateway；
+        - 放进 config       ⇒ F3 明确禁止 com.oncall.config.. 依赖 com.oncall.toolgateway..。
+      只有站在依赖图最顶端的新模块能同时引这些而不违规。
+
+    为什么现在就要有它（而不是等 Spring Boot 那一步）：
+      轨道 C5 建了 JsonScaleArgsAdapter，轨道 D1 量出它的生产引用数是 0——
+      那道夹紧防线一行都没接上。缺的不是实现，是「有一个地方负责 new 它」。
+      本模块的第一个类就是补这个位置。
+
+    依赖方向：app -> tool-gateway -> domain，不反向。
+    刻意不引 spring-boot-starter：本模块当前只提供纯 Java 装配，
+    Spring 绑定是后续增量（D2-b），届时再加，不要提前把容器依赖拖进来。
+  -->
+
+  <dependencies>
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-tool-gateway</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
+      领域层。tool-gateway 已经传递依赖了它，但本模块源码直接 import
+      com.oncall.domain 下的类型，所以显式声明——传递依赖不是契约。
+    -->
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-domain</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+</project>
