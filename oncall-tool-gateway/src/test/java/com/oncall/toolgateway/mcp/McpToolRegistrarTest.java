@@ -377,6 +377,18 @@ class McpToolRegistrarTest {
     }
 
     @Test
+    @DisplayName("★ argClamper 为 null 立即失败——MCP 工具参数形状我们完全不掌握，更不能兜底")
+    void nullArgClamperRejected() {
+        // 旧行为是静默退化成 ArgClamper.NOOP。远端工具的参数形状我们一点都不知道，
+        // 这一侧比本地工具更需要夹紧，所以最不能让「忘了接」看起来像「不需要」。
+        assertThatThrownBy(() -> new McpToolRegistrar(catalog, policyEngine, killSwitch,
+                autoApprove(), audit, new Sha256IdempotencyStore(),
+                new InMemoryToolExecutionLedger(), null, REG_CTX))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ArgClamper");
+    }
+
+    @Test
     @DisplayName("名字拼装是可预测的：mcp:<server>:<tool>")
     void nameFormatIsStable() {
         assertThat(McpToolRegistrar.namespacedName("cmdb", "restart")).isEqualTo("mcp:cmdb:restart");

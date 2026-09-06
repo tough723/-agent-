@@ -100,7 +100,16 @@ public class GuardedToolCallback implements ToolCallback {
             throw new IllegalArgumentException("ToolExecutionLedger 不能为 null（多实例下内存实现的幂等会失效）");
         }
         this.ledger = ledger;
-        this.argClamper = argClamper == null ? ArgClamper.NOOP : argClamper;
+        if (argClamper == null) {
+            // 与上面 ledger 的判空是同一条理由，只是后果不同。
+            // null 静默变成 NOOP 意味着「忘了接夹紧器」与「这个工具不需要夹紧」
+            // 在代码里长得一模一样——而前者会让注入生成的 replicas:0 原样执行。
+            // 实测：JsonScaleArgsAdapter 是 ArgClamper 唯一的生产实现，
+            // 而在这一版之前它的生产引用数是 0，三处全部落到 NOOP。
+            throw new IllegalArgumentException("ArgClamper 不能为 null"
+                    + "（null 会静默退化成不夹紧，防线等于没接上且没有任何报错）");
+        }
+        this.argClamper = argClamper;
         this.runId = runId;
         this.step = step;
         this.toolNameOverride = toolNameOverride;
@@ -376,6 +385,9 @@ public class GuardedToolCallback implements ToolCallback {
                                                ToolExecutionLedger ledger,
                                                String runId,
                                                int step) {
+        // 这里的 NOOP 是<b>显式选择</b>，不是缺省兜底：只读工具没有 replicas 这类
+        // 需要夹紧的数值参数。与构造器里「null 直接抛」并不矛盾——
+        // 差别在于这里是有人写下了 NOOP 并说明理由，那里是谁都没写。
         return new GuardedToolCallback(delegate, policyEngine, killSwitch,
                 (k, p, a, ctx) -> Approval.granted("auto"), auditLog, auditContext, idempotencyStore,
                 ledger, ArgClamper.NOOP, runId, step);

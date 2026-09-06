@@ -557,6 +557,37 @@ class GuardedToolCallbackTest {
         assertThat(guarded.delegate()).isSameAs(tool);
     }
 
+    // ------------------------------------------------------ argClamper 不得静默兜底
+
+    @Test
+    @DisplayName("★ argClamper 为 null 立即失败，而不是静默退化成不夹紧")
+    void nullArgClamperRejected() {
+        // 旧行为是 argClamper == null ? ArgClamper.NOOP : argClamper——
+        // 「忘了接夹紧器」与「这个工具不需要夹紧」在代码里长得一模一样，
+        // 而前者会让注入生成的 replicas:0 原样执行。
+        // 同一个构造器里 ledger 的判空早就抛了，这一行却兜底，策略是相反的。
+        assertThatThrownBy(() -> guard(RecordingTool.ok(READ_TOOL, "ok"), null, autoApprove()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ArgClamper");
+    }
+
+    @Test
+    @DisplayName("显式传入 NOOP 仍然允许——只读工具确实没有需要夹紧的数值参数")
+    void explicitNoopIsStillAllowed() {
+        GuardedToolCallback guarded =
+                guard(RecordingTool.ok(READ_TOOL, "ok"), ArgClamper.NOOP, autoApprove());
+        assertThat(guarded.getToolDefinition().name()).isEqualTo(READ_TOOL);
+    }
+
+    @Test
+    @DisplayName("readOnly 工厂用的是显式 NOOP，不受判空影响")
+    void readOnlyFactoryUsesExplicitNoop() {
+        GuardedToolCallback guarded = GuardedToolCallback.readOnly(
+                RecordingTool.ok(READ_TOOL, "ok"), policyEngine, killSwitch,
+                audit, CTX, idempotency, ledger, "run-1", 1);
+        assertThat(guarded.getToolDefinition().name()).isEqualTo(READ_TOOL);
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private GuardedToolCallback guard(ToolCallback delegate, ArgClamper clamper, ApprovalGate gate) {

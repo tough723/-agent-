@@ -129,7 +129,13 @@ public final class McpToolRegistrar {
         this.auditLog = auditLog;
         this.idempotencyStore = idempotencyStore;
         this.ledger = ledger;
-        this.argClamper = argClamper == null ? ArgClamper.NOOP : argClamper;
+        if (argClamper == null) {
+            // MCP 工具是远端来的，参数形状我们完全不掌握——
+            // 这一侧比本地工具更需要夹紧，所以更不能让 null 静默变成不夹紧。
+            throw new IllegalArgumentException("ArgClamper 不能为 null"
+                    + "（null 会静默退化成不夹紧，防线等于没接上且没有任何报错）");
+        }
+        this.argClamper = argClamper;
         this.registrationContext = registrationContext;
     }
 
