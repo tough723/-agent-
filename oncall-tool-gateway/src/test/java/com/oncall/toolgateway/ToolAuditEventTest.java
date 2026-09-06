@@ -163,7 +163,7 @@ class ToolAuditEventTest {
     @Test
     @DisplayName("★ traceId 空白即拒绝——它是 NOT NULL，而占位 trace 会让整张审计表失去关联能力")
     void contextRequiresTraceId() {
-        assertThatThrownBy(() -> ToolAuditContext.of(null))
+        assertThatThrownBy(() -> ToolAuditContext.of((String) null))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("traceId");
         assertThatThrownBy(() -> ToolAuditContext.of("   "))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("traceId");
