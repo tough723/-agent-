@@ -1591,7 +1591,7 @@ return json.replaceAll("\\s+", "");
 
 轨迹：`280/20/75` → `304/22/78` → `323/23/82` → `365/25/91` → `371/26/91` →
 `398/27/99` → `427/29/102` → `460/31/107` → `487/32/111` → `503/33/114` →
-`523/35/121` → `556/38/126` → `573/39/127` → `616/42/133` → `640/44/134` → `659/45/135` → **`666/45/135`**。
+`523/35/121` → `556/38/126` → `573/39/127` → `616/42/133` → `640/44/134` → `659/45/135` → `666/45/135` → **`677/45/136`**。
 
 ### 1.17 轨道 C3：审批记录第一次真正被写入
 
@@ -2253,4 +2253,97 @@ grep -rn "warnings()" oncall-*/src
 **这是连续第二个一次绿的推送。**
 与 C1–C4 每次都至少红一次相比，唯一的流程差异是 C5 起开始
 「先查证 API 行为再写断言」。
+
+---
+
+### 1.21 轨道 C7：一张表有四列结构上填不出来
+
+#### 起点：DDL 写了 17 列，Java 侧一个类型都没有
+
+```
+llm_call_log 的 Java 类型            0（9 个 grep 命中全是注释）
+getUsage() / getMetadata() 生产命中  0 —— token 用量从没被任何地方读过
+System.nanoTime() 生产命中           仅 GuardedToolCallback（那是工具耗时）
+new ResilientChatModel 生产构造点    0
+```
+
+`llm_call_log` 有 17 列，其中**四列只有 `ResilientChatModel` 这一层能填**：
+
+| 列 | 约束 | 为什么外面填不出来 |
+|----|------|-------------------|
+| `model` | `NOT NULL` | 链上究竟是谁服务了这次调用——failover 之后就不是主模型了，而 `ChatResponse` 上没有任何模型标识 |
+| `latency_ms` | `NOT NULL` | 必须含重试与退避，否则 P95 测的不是用户感知的延迟 |
+| `is_retry` | `NOT NULL` | 重试发生在装饰器内部 |
+| `failover_from` | 可空 | DDL 注释点名的「延迟维度硬伤」的证据 |
+
+根因是 **`FailureListener` 不对称**：它只报失败，
+成功路径一个字都不报——`return entry.model().call(prompt)` 直接把响应交出去。
+
+> **于是任何要写 `llm_call_log` 的代码都只能编这四列，而三列是 `NOT NULL`。**
+> 一张字段造假的计量表比没有计量更糟：它会给出看起来可信的错误成本。
+
+这与 C1 的 `tool_audit_log` 必填列喂不满是同一个形状：**声明存在，实现缺席。**
+
+#### 三个刻意的设计选择
+
+**① `latency` 从进入 `call()` 就开始计时。**
+只测最后一次成功尝试的话 P95 会好看很多，
+而用户等的那段退避恰好被排除在外——那正是 DDL 注释点名的硬伤。
+
+**② `abandoned` 记在内层循环之外。**
+同一个模型上的多次重试**不算** failover，那是 `is_retry` 的语义，
+DDL 里两列是分开的。
+
+**③ `Ticker` 脚本用尽时抛 `ArrayIndexOutOfBounds`，不 fallback 到真实时钟。**
+后者会让一条本该失败的断言看起来通过。
+
+用 `nanoTime` 而不是 `currentTimeMillis`：墙上时钟被 NTP 回拨一次
+就能让 `latency_ms` 变负，而 `CallOutcome` 会把它拒掉——
+于是变成一次莫名其妙的异常。单调时钟不会往回走，这个失败模式从根上不存在。
+
+#### 为什么计量口必须长在 `agent.llm` 里
+
+F11 禁止 `com.oncall.agent.llm..` 依赖
+domain / config / toolgateway / tooladmin / ontology / agent.query，
+理由是「重试与 failover 是**传输层的可靠性问题**」。
+
+所以 `CallOutcome` 只交事实，**刻意不写库**——
+凑齐一行还需要 `prompt_version` 与 `call_type`，
+那两列的知识在 `agent.prompt` 与编排层，本包不许引。
+
+#### 与 C4 的对照：这次为什么不会撞重载歧义
+
+C4 加 `of(TraceId)` 时撞坏了已有的 `of(null)`，因为**元数相同**。
+这次加的是六参构造器，与已有的二参 / 四参**元数不同**，
+四参构造器保留并委托给六参（`Ticker.systemNanoTime()` + `CallObserver.silent()`），
+所以已有的两个调用点一行都不用改。
+
+> **加重载会不会撞，判据是元数与参数类型，不是「我觉得相关」。**
+
+#### 测试（11 条，`@Test` 87 → 98）
+
+标 ★ 的四条**在旧代码下根本写不出来**——那些信息此前在整个代码库里不存在：
+
+| 断言 | 值 |
+|------|-----|
+| failover 之后 | `model()=="backup"`、`failoverFrom=="primary"` |
+| 同模型重试 | `is_retry==true` 但 `failoverFrom==null` |
+| `latency_ms` | `12345`（含 500ms 退避，脚本化时钟） |
+| 整条链耗尽 | 不产生任何 `CallOutcome` |
+
+另外七条守 `CallOutcome` 自身的四条构造校验、`firstModelServed` 工厂、
+无 failover 时 `failoverFrom` 为 `null` 而非空串、`systemNanoTime` 单调。
+
+#### CI 核对
+
+`d997b5f` · run `34049425356` · **success**
+报告文件 45 · 测试总数 **677** · 失败 0 · 错误 0
+`DDL-表数 19` · `DDL-约束 4/4`
+生产类 **136**（新增 `CallOutcome`）
+
+**这是连续第三个一次绿的推送（C5 / C6 / C7）。**
+C1–C4 每轮都至少红一次。唯一的流程差异是 C5 起开始「先查证 API 行为再写断言」，
+本轮又加一条：**用不熟的 API 前先穷举它的公开面**
+（`failFirst` 是实例方法还是静态、`backoffBeforeRetry(1)` 到底返回多少、
+`call()` 恰好读几次时钟——这三件事都先量过才写断言）。
 
