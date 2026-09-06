@@ -321,7 +321,22 @@
      后者更省事但失去热切换与灰度，这个选择还没做。
    - **版本号写进 `llm_call_log`**：`renderActiveWithVersion` 已经把文本与版本号
      **一次性**返回（分开读会撞上热切换），落库那一侧还没有写入者。
-4. **`IntentClassifier`** —— `EXECUTE` 意图必须在任何 LLM 之前用正则确定性判定。
+4. **`IntentClassifier`** —— ✅ **已完成**（`com.oncall.agent.query`，4 类 / 27 用例，§1.12）。
+   `EXECUTE` 意图在任何 LLM 之前用正则确定性判定，且**模型无权下调**。
+   召回率 = 1.0 这个硬门槛是**靠结构实现的，不是靠模型的准确率**。
+
+   **剩两个待接口子**：
+   - **护栏 1（`resolvedEntities` 回显 UI）**：数据已经在
+     `QueryUnderstanding.resolvedEntities()` 里，前端还没有消费方。
+   - **护栏 4（原句 + 改写句并集检索）**：属检索层，要等混合检索落地。
+     `QueryUnderstanding.rewritten()` 就是给它的信号——
+     为 `false` 时检索层应当只用原句。
+
+5. **`oncall-eval`（L3 评测）** —— 现在成了轨道 B 的下一个瓶颈。
+   `IntentClassifier` 的正则、`intent-classify.v1` 的 prompt、
+   `query.rewrite-min-confidence` 的默认值 0.7，**这三个数现在都没有依据**，
+   只能靠人工判断。§4 的验收指标（意图准确率 ≥ 0.95、`EXECUTE` 召回率 = 1.0、
+   拒答率 5–25%）一条都还没法算。
    LLM 的分类结果是**路由**，不是**安全**；`EXECUTE` 召回率必须是 1.0 硬门槛。
 
 **已完成**：

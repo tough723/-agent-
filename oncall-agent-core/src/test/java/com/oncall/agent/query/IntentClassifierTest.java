@@ -170,18 +170,24 @@ class IntentClassifierTest {
     @Test
     @DisplayName("阈值是 RUNTIME_HOT：改了立刻生效，不需要重启")
     void theThresholdIsReadPerCallNotAtConstruction() {
+        // 两次 classify 就要脚本两条响应：脚本用尽时 StubChatModel 会抛，
+        // 于是走降级分支、rewritten 恒为 false——那样这条用例会因为
+        // 「替身没脚本」而失败，看起来却像「热更新没生效」。
+        String json = "{\"intent\":\"QUERY_HISTORY\",\"standaloneQuery\":\"自包含的查询\","
+                + "\"rewritten\":true,\"resolvedEntities\":[],\"confidence\":0.30}";
         InMemoryConfigStore store = new InMemoryConfigStore();
-        IntentClassifier c = classifier(StubChatModel.returning(
-                "{\"intent\":\"QUERY_HISTORY\",\"standaloneQuery\":\"自包含的查询\","
-                        + "\"rewritten\":true,\"resolvedEntities\":[],\"confidence\":0.30}"), store);
+        IntentClassifier c = classifier(StubChatModel.returning(json, json), store);
 
         assertThat(c.classify("那它上次也这样吗？").rewritten())
                 .as("默认阈值 0.7，置信度 0.30 应当被挡下").isFalse();
 
         // 同一个 classifier 实例，只改配置
         store.put(OnCallConfigKeys.QUERY_REWRITE_MIN_CONFIDENCE, "0.2");
-        assertThat(c.classify("那它上次也这样吗？").rewritten())
-                .as("阈值降到 0.2 之后应当采用改写").isTrue();
+        QueryUnderstanding second = c.classify("那它上次也这样吗？");
+
+        // 先确认模型这一侧是正常的，否则下面的断言没有意义
+        assertThat(second.degradeReason()).as("第二次调用不该走降级").isNull();
+        assertThat(second.rewritten()).as("阈值降到 0.2 之后应当采用改写").isTrue();
     }
 
     @Test

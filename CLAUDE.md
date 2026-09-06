@@ -91,6 +91,7 @@ ls *.md                                            # 确认文档集完整
 | `oncall-agent-core/src/test/.../StubChatModel.java` | L2 测试的地基：把编排逻辑从非确定性里摘出来 |
 | `oncall-agent-core/.../prompt/PromptRegistry.java` | prompt 的单一事实来源：版本不存在**绝不**回退 |
 | `oncall-agent-core/src/main/resources/prompts/` | prompt 正文，文件名 `<name>.<version>.md`，**不可原地修改** |
+| `oncall-agent-core/.../query/IntentClassifier.java` | 规则层定安全、LLM 只做路由。**改这里的正则等于改安全边界** |
 | `db/migration/V1__config_governance.sql` | 已落地的 2 张表 |
 | `.github/mvn-test.sh` | CI 失败诊断（annotation 通道） |
 | `.github/workflows/ci.yml` | 模块列表是**硬编码**的，加模块要改这里 |
