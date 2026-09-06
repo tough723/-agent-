@@ -15,6 +15,7 @@ public final class OnCallConfigKeys {
     }
 
     // ---- 分组名 ----
+    public static final String GROUP_QUERY = "query";
     public static final String GROUP_RETRIEVAL = "retrieval";
     public static final String GROUP_CHUNKING = "chunking";
     public static final String GROUP_VECTOR = "vector";
@@ -26,6 +27,10 @@ public final class OnCallConfigKeys {
     public static final String GROUP_AUTONOMY = "autonomy";
     public static final String GROUP_MCP = "mcp";
     public static final String GROUP_FALLBACK = "fallback";
+
+    // ---- 查询理解 ----
+    public static final String QUERY_REWRITE_ENABLED = "query.rewrite-enabled";
+    public static final String QUERY_REWRITE_MIN_CONFIDENCE = "query.rewrite-min-confidence";
 
     // ---- 检索 ----
     public static final String RETRIEVAL_CANDIDATE_SIZE = "retrieval.candidate-size";

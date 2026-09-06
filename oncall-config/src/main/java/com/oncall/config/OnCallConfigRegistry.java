@@ -28,6 +28,7 @@ public final class OnCallConfigRegistry {
 
     public static ConfigRegistry create() {
         List<ConfigSpec> specs = new ArrayList<>();
+        query(specs);
         retrieval(specs);
         chunking(specs);
         vector(specs);
@@ -40,6 +41,36 @@ public final class OnCallConfigRegistry {
         mcp(specs);
         fallback(specs);
         return new ConfigRegistry(specs);
+    }
+
+    // ------------------------------------------------------------------ 查询理解
+
+    /**
+     * 查询改写的两个开关。
+     *
+     * <p>这一组之所以放在最前面：它在管线入口，改这里会同时影响
+     * 下游检索、引用校验与最终回答，影响面比任何单个检索参数都大。
+     *
+     * <p>{@code query.rewrite-min-confidence} 是<b>高危项候选</b>
+     * （《查询理解与知识表示设计》§3）：调低会让"改歪的查询"更容易通过，
+     * 表现为"回答变差"而不是报错——属于最难发现的那类退化。
+     * 它还没进 {@code HIGH_RISK_KEYS}，因为那需要先有 L3 评测集
+     * 来界定"多低算太低"；在那之前把它做成 RUNTIME_HOT 并写清后果，
+     * 比假装它不危险要诚实。
+     */
+    private static void query(List<ConfigSpec> out) {
+        String g = OnCallConfigKeys.GROUP_QUERY;
+        out.add(ConfigSpec.builder(OnCallConfigKeys.QUERY_REWRITE_ENABLED, ConfigType.BOOLEAN, "true", ConfigTier.RUNTIME_HOT)
+                .group(g)
+                .description("是否启用查询改写（含指代消解与实体归一）。关掉则始终用原句检索。"
+                        + "「改写把原意改歪」是已登记的故障点，这个开关是它的一键兜底。")
+                .build());
+        out.add(ConfigSpec.builder(OnCallConfigKeys.QUERY_REWRITE_MIN_CONFIDENCE, ConfigType.DOUBLE, "0.7", ConfigTier.RUNTIME_HOT)
+                .group(g).bounds(0.0, 1.0)
+                .description("模型自报置信度低于此值时放弃改写、直接用原句检索。"
+                        + "宁可召回差，不要改歪——改歪的代价是答非所问，而且用户看不出来。"
+                        + "调低此值等于放宽这道护栏。")
+                .build());
     }
 
     // ------------------------------------------------------------------ 检索

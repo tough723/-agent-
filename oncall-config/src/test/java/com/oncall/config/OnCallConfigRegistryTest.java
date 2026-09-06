@@ -209,10 +209,10 @@ class OnCallConfigRegistryTest {
         // 用精确值而不是区间，是刻意的：曾经文档写「36 项 / RUNTIME_HOT 20 项」而
         // 代码实际是 38 项 / 22 项，差了 2 项且没人发现。区间断言抓不到这种漂移。
         Map<ConfigTier, Integer> counts = registry.countByTier();
-        assertThat(counts.get(ConfigTier.RUNTIME_HOT)).isEqualTo(24);
+        assertThat(counts.get(ConfigTier.RUNTIME_HOT)).isEqualTo(26);
         assertThat(counts.get(ConfigTier.REQUIRES_MIGRATION)).isEqualTo(8);
         assertThat(counts.get(ConfigTier.BACKEND_ONLY)).isEqualTo(9);
-        assertThat(registry.size()).isEqualTo(41);
+        assertThat(registry.size()).isEqualTo(43);
     }
 
     @Test

@@ -300,7 +300,13 @@ class ArchitectureRuleTest {
                     .should().dependOnClassesThat().resideInAnyPackage(
                             "com.oncall.domain..", "com.oncall.config..",
                             "com.oncall.toolgateway..", "com.oncall.tooladmin..",
-                            "com.oncall.ontology..")
+                            "com.oncall.ontology..",
+                            // 也禁止依赖同模块内的编排层：
+                            // PromptRegistry 只认「名字 + 版本 + 变量」，
+                            // 它连"这段 prompt 是给意图分类还是给 Planner 用的"都不该知道。
+                            // 一旦它引了 Intent，加一个 prompt 就要动编排层，
+                            // 而"叶子"这个性质也就没了。
+                            "com.oncall.agent.query..")
                     .because("LLM 可靠性与 prompt 装载都是与领域无关的基础件；"
                             + "保持零内部依赖，其它模块才能直接复用")
                     .as("F11 agent 基础件不得依赖其它业务模块");

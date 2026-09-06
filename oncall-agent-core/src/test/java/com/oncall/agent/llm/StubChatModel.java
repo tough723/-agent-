@@ -27,9 +27,14 @@ import java.util.List;
  *
  * <p>放在 {@code src/test/java} 而不是 main：它是测试替身，不该进生产 jar。
  * 与 {@code oncall-tool-gateway} 的 {@code StubToolCallback} 同一个先例。
- * 将来若别的模块的 L2 测试也要用，再提升为独立的 test-jar 并记下理由。
+ *
+ * <p><b>可见性是 public，因为它被同模块内另一个包用</b>：
+ * {@code com.oncall.agent.query} 的测试需要它来驱动 {@code IntentClassifier}。
+ * 宁可放宽一个测试替身的可见性，也不要在第二个包里复制一份——
+ * 两份替身会各自漂移，而漂移的替身会让下游断言因为错误的原因通过。
+ * 若将来<b>跨模块</b>也要用，再提升为独立 test-jar 并记下理由。
  */
-final class StubChatModel implements ChatModel {
+public final class StubChatModel implements ChatModel {
 
     private final Deque<ChatResponse> scripted = new ArrayDeque<>();
     private final List<String> receivedPrompts = new ArrayList<>();
@@ -47,7 +52,7 @@ final class StubChatModel implements ChatModel {
     }
 
     /** 依次返回这些文本，每个文本包成一个单 {@link Generation} 的响应。 */
-    static StubChatModel returning(String... texts) {
+    public static StubChatModel returning(String... texts) {
         List<ChatResponse> rs = new ArrayList<>();
         for (String t : texts) {
             rs.add(new ChatResponse(List.of(new Generation(new AssistantMessage(t)))));
@@ -64,12 +69,12 @@ final class StubChatModel implements ChatModel {
      * 编译器判不出更具体的那个——直接报"引用不明确"。
      * 这种错只在"恰好有人写了零参调用"时才暴露，改名比记住这条规则可靠。
      */
-    static StubChatModel respondingWith(ChatResponse... responses) {
+    public static StubChatModel respondingWith(ChatResponse... responses) {
         return new StubChatModel(List.of(responses));
     }
 
     /** 前 {@code n} 次调用抛异常，之后才按脚本返回。用来测重试与 failover。 */
-    StubChatModel failFirst(int n, RuntimeException e) {
+    public StubChatModel failFirst(int n, RuntimeException e) {
         if (n < 0) {
             throw new IllegalArgumentException("n 不能为负：" + n);
         }
@@ -85,16 +90,16 @@ final class StubChatModel implements ChatModel {
      * 各条消息的文本拼在一起，也就是模型真正"看到"的东西。
      * 刻意不只取最后一条 user 消息：那样测不出"system prompt 到底有没有带上"。
      */
-    List<String> receivedPrompts() {
+    public List<String> receivedPrompts() {
         return List.copyOf(receivedPrompts);
     }
 
-    String lastPrompt() {
+    public String lastPrompt() {
         return receivedPrompts.isEmpty() ? null : receivedPrompts.get(receivedPrompts.size() - 1);
     }
 
     /** 被调用的次数，<b>包括失败的那几次</b>——失败的调用同样说明模型被触达过。 */
-    int callCount() {
+    public int callCount() {
         return receivedPrompts.size();
     }
 

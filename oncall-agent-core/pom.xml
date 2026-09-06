@@ -28,6 +28,12 @@
       重试与 failover 是传输层的可靠性问题，与领域概念无关。
       让它保持零内部依赖，任何模块都能拿它去包装自己的 ChatModel。
       配置项（fallback.model-failover-chain）的读取留给最终的应用模块。
+
+      注意「模块零内部依赖」与「包零内部依赖」是两件事：
+      本模块依赖 oncall-config（IntentClassifier 要读配置），
+      但 ArchUnit F11 钉住的是 com.oncall.agent.llm 与 com.oncall.agent.prompt
+      这两个子包不得依赖任何内部包——基础件必须能被单独复用，
+      编排件（com.oncall.agent.query）本来就要读配置。
   -->
 
   <dependencies>
@@ -46,6 +52,28 @@
     <dependency>
       <groupId>org.springframework</groupId>
       <artifactId>spring-core</artifactId>
+    </dependency>
+
+    <!--
+      IntentClassifier 要读 query.rewrite-enabled 与 query.rewrite-min-confidence，
+      而且必须**每次调用都读**——这两个键是 RUNTIME_HOT，构造时读一次就成了假热更新。
+      所以这里依赖配置模块本身，而不是让 classifier 收两个裸参数：
+      收裸参数的话这两个配置项就没有读取者，改了不生效，
+      而「配置项声明了却没人读」是本项目明令禁止的形状。
+    -->
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-config</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
+      解析模型返回的 JSON。它是 spring-ai-model 的传递依赖，但本模块源码直接
+      import，所以显式声明——理由同上面的 spring-core。
+    -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
     </dependency>
   </dependencies>
 </project>
