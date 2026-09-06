@@ -284,7 +284,7 @@
    可见性由 `ToolPolicyEngineVisibilityTest` 守住（6 个用例，非空自证）。
    构造器与读方法仍是 public：封的是运行期变更，不是启动装配也不是读。
 
-### 轨道 B：AI 那一半（`ChatModel` 已落地 1 个装饰器，其余 5 个组件仍是 0）
+### 轨道 B：AI 那一半（六个 Spring AI 组件里 `ChatModel` 已有 2 个生产文件引用，其余 5 个仍是 0）
 
 2. **`oncall-agent-core` 模块 + `StubChatModel` + 第一个 L2 场景** —— ✅ **已完成**。
    这是 AI 那一半的**前置条件**而不是其中一项：没有 `StubChatModel`，

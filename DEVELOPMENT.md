@@ -768,6 +768,8 @@ oncall-tool-gateway/src/test/java/com/oncall/toolgateway/
 （`ChatModel` / `VectorStore` / `EmbeddingModel` / `TextSplitter` /
 `StateGraph` / `ChatClient`）的生产文件数**全部为 0**。
 本轮之后是 `ChatModel` 1 个（就是本节的装饰器），**其余 5 个仍为 0**。
+（这是 §1.10 当时的实测值。§1.12 之后 `ChatModel` 变成 2 个——
+`IntentClassifier` 也引用了它；其余 5 个仍为 0。）
 没有 `StubChatModel`，任何编排逻辑都进不了 CI——
 真模型非确定，红了没人分得清是逻辑坏了还是模型今天不高兴。
 
