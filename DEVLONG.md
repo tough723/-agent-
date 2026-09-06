@@ -180,6 +180,9 @@
 | **javadoc 写着「key 排序」，实现只去空白——而现有测试恰好测不到** | `canonical()` 的注释承诺了排序，代码只有 `replaceAll("\\s+","")`。于是 `{"a":1,"b":2}` 与 `{"b":2,"a":1}` 算出两个幂等键，**幂等静默失效，后果是二次扩容、二次重启**。而 `whitespaceDifferenceDoesNotBreakIdempotency` 这条名字完全对题的测试只覆盖空白差异——空白正是旧实现唯一处理对了的部分。**规则：一条测试守的是「已经成立的性质」还是「可能被破坏的性质」，要问它在新实现下会不会红；不会红的测试不提供任何保证** |
 | **把预测数字写进提交信息，两个都写错了** | 我在看到 `grep -c @Test` 的输出之前就把「14 条 / 预测 574」写进了提交信息，实际是 13 条 / 573。这与「不要凭记忆把计数写进文档」是同一条教训，只是这次发生在提交信息里——而提交信息改不了（不能强推）。**规则：任何数字都要在命令输出之后才落笔，提交信息也不例外** |
 | **`JsonNodeFactory` 没有 `numberNode(String)`** | 照着「传个字符串进去」的直觉写，编译不过。连带一个更隐蔽的坑：Jackson 序列化 `BigDecimal` 用 `toString()`，而 `stripTrailingZeros()` 会把 `1000000` 变成 `1E+6`——若直接把 stripped 传进去，同一个整数会因为写法不同算出两个幂等键，**正好是本轮要修的那类 bug 又回来一次**。**规则：用第三方 API 前先确认重载存在；数值类型走 toString() 的地方都要问一句「它会不会变成科学计数法」** |
+| **lambda 不会在代码里写出它实现的接口名** | 改 `ApprovalGate.await` 的签名时，我搜了 `implements ApprovalGate`（0 命中，因为 lambda 不 implements 任何东西）和 `(key, policy, args) ->`（漏掉了 `readOnly(...)` 工厂里的 `(k, p, a) ->`）。第三个实现点两次 grep 都找不到，最后是编译器找到的。**规则：改函数式接口的签名，要搜返回类型（`-> Approval.`）而不是接口名；或者干脆让编译器来找，别指望 grep 找全** |
+| **一个只用来「校验」的临时对象，被我拿去当取值来源** | `JdbcApprovalRecordStore.decide` 里我造了个探针校验不变量，两个时间都填 `Instant.EPOCH`，校验完却拿 `probe.decidedAt()` 去写库——**每一行的 `decided_at` 都变成 1970-01-01**。这张表保留期永久、是责任归属的唯一凭据，「谁在什么时候批的」那个「什么时候」全是假的。靠 `find()` 也走构造校验才被抓出来（读侧纵深防御）。**规则：临时校验对象里的占位值绝不能流进写入路径；凡是「先造个假的验一下形状」的写法，都要问一句「验完之后我用了它的哪个字段」** |
+| **「探针」听起来像能验一切，其实只能验单字段的形状** | `decideRejectsSelfApproval` 期望 `IllegalArgumentException`，实际拿到 H2 撞 `chk_approval_not_self` 后的 `IllegalStateException`。因为探针的 `requester` 是我凭空填的 `"probe-requester"`，而真实记录是 `"alice"`，`"alice" != "probe-requester"` ⇒ 自批检查在探针里**永远通过**。一般化：跨字段不变量（`approver <> requester`、`decidedAt >= requestedAt`）**必须读真实行才验得到**，凭空构造的对象只能验一元不变量。**规则：列出被校验类的全部不变量，逐条问「验这条需要哪些字段的真实值」；凡是需要真实值的，就不能用造出来的对象** |
 
 
 
@@ -248,7 +251,14 @@
 > I14（MCP 显式纳管）与 I8（幂等的物理保证）都已堵上。
 > 剩余 3 项是工程收尾：`JsonScaleArgsAdapter`、`WecomApprovalGate`、
 > `AutonomyLevel` 接入调用链（`JdbcToolAuditLog` 已于轨道 C1 落地，
-> `canonical()` 规范化已于轨道 C2 落地）。
+> `canonical()` 规范化已于轨道 C2 落地，`approval_record` 持久化已于轨道 C3 落地）。
+>
+> **C3 补上的是一个此前没人量过的洞**：`grep -rn "implements ApprovalGate" oncall-*/src/main`
+> 此前命中 **0**——接口、javadoc、DDL 全都写好了，
+> `approval_record` 的注释还写着「保留期永久，它是责任归属的唯一凭据」，
+> 但生产代码里没有任何东西真的会拦住一次高危操作，那张表行数恒为 0。现在是 1。
+> 这与 §1.15 的审计表、§1.16 的 `canonical()` 是同一类问题的第三种形态：
+> **声明存在，实现缺席**。
 >
 > **再更正一处**：我曾把 `canonical()` 归到「工程收尾」，这个归类是错的。
 > 它的 javadoc 写着「JSON key 排序 + 去空白」而实现只去空白，

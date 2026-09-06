@@ -85,6 +85,8 @@ ls *.md                                            # 确认文档集完整
 | `oncall-tool-gateway/.../GuardedToolCallback.java` | **基石**：七道关卡。**审计必须覆盖每一个出口**——三条拒绝路径曾因审计调用点全写在「放行之后」而一条都没记 |
 | `oncall-tool-gateway/.../ToolAuditEvent.java` | 一条审计事件 = `tool_audit_log` 的一行。7 个 `NOT NULL` 列全是 record 组件，**构造期就校验**，少一个就构造不出对象 |
 | `oncall-tool-gateway/.../JsonCanonicalizer.java` | 幂等键的唯一输入。键排序 + 数组**保序** + 数字归一。**改它等于改幂等语义**——归一过度会让两个不同操作撞上同一个键（表现为 Agent 说做了但没做），归一不足会导致二次执行 |
+| `oncall-tool-gateway/.../ApprovalRecord.java` | 一条审批记录 = `approval_record` 的一行。**这张表保留期永久，是责任归属的唯一凭据**，所以字段形状在构造期就钉死：`GRANTED`/`REJECTED` 必须有审批人（没有人名的批准等于没有责任人）、`TIMED_OUT` **必须没有**审批人（没有人做过这个决定，填人名等于伪造责任归属）、审批人 ≠ 申请人。它有两条**跨字段**不变量，**校验时不能用凭空构造的对象**——那样只能验到单字段的形状 |
+| `oncall-tool-gateway/.../JdbcApprovalRecordStore.java` | `decide` 是**条件更新**（`WHERE decision='PENDING'`）：两个审批人同时点批准只有一个生效。它先读一行做校验，但并发保证仍来自条件更新——**别把「既然读了」改成先查后写** |
 | `oncall-tool-gateway/.../ArgMasker.java` | `args_masked` 的唯一来源。三条性质：绝不抛异常（含 `StackOverflowError`）、宁可多遮、不保留原值长度。**改正则前先读类注释里那两个已知 bug 的成因** |
 | `oncall-config/.../OnCallConfigRegistry.java` | 43 项配置的唯一声明处 |
 | `oncall-config-admin/.../ConfigAdminController.java` | 配置 REST + 双人复核 |

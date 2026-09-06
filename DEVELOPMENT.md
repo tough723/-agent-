@@ -102,7 +102,7 @@ CI 只覆盖到 `oncall-domain` + `oncall-config` + `oncall-tool-gateway` 三个
 |------|------|
 | `MessageChatMemoryAdvisor` 构造方式（`架构设计方案.md` §3.2） | 仅有文档，1.x 有构造器与 builder 两种写法，写代码时二选一 |
 | `CitationVerifier` / `RerankPostProcessor` / `HybridRetriever` / `UsageTrackingAdvisor` | 仅在 `质量与可靠性设计.md` 中设计，未落地 |
-| M1 剩余：`JsonScaleArgsAdapter`、`WecomApprovalGate`、`AutonomyLevel` 接入调用链 | 未落地（`JdbcToolAuditLog` 已于 §1.15 落地） |
+| M1 剩余：`JsonScaleArgsAdapter`、`WecomApprovalGate`、`AutonomyLevel` 接入调用链 | 未落地（`JdbcToolAuditLog` 已于 §1.15 落地，`canonical()` 规范化已于 §1.16 落地，`approval_record` 持久化已于 §1.17 落地） |
 
 
 ---
@@ -1483,9 +1483,10 @@ CI 第一轮红在 `StackOverflowError`。
 
 #### 遗留
 
-- **`approval_record` 仍然没有 JDBC 实现**。审计流水现在能落库了，
-  但审批本身（谁申请、谁批、何时）还只在内存里——
-  而 DDL 注释说这张表「保留期永久，它是责任归属的唯一凭据」。
+- ~~**`approval_record` 仍然没有 JDBC 实现**~~ ✅ **已解决（§1.17）**。
+  连带解决了更根本的一条：`grep -rn "implements ApprovalGate" oncall-*/src/main`
+  此前命中 **0** —— 接口、javadoc、DDL 全都写好了，
+  但生产代码里没有任何东西真的会拦住一次高危操作。现在是 1。
 - **`ArgMasker` 的敏感键表是固定的**。要按部署扩展就得走配置项，
   而按本项目自己的教训「不要发布一个没人读的配置键」，
   所以这一轮没做；真要收紧应当按工具的 `argsJsonSchema` 逐字段标注。
@@ -1585,7 +1586,151 @@ return json.replaceAll("\\s+", "");
 
 轨迹：`280/20/75` → `304/22/78` → `323/23/82` → `365/25/91` → `371/26/91` →
 `398/27/99` → `427/29/102` → `460/31/107` → `487/32/111` → `503/33/114` →
-`523/35/121` → `556/38/126` → **`573/39/127`**。
+`523/35/121` → `556/38/126` → `573/39/127` → **`616/42/133`**。
+
+### 1.17 轨道 C3：审批记录第一次真正被写入
+
+#### 起点是一个 grep
+
+```
+grep -rn "implements ApprovalGate" oncall-*/src/main   →  0 命中
+```
+
+接口、javadoc、DDL 全都写好了，`approval_record` 的注释还写着
+「保留期永久——它是责任归属的唯一凭据」，
+但生产代码里**没有任何东西真的会拦住一次高危操作**：
+`GuardedToolCallback` 注入的 `approvalGate` 只能由测试提供 lambda，
+那张表的行数恒为 0。
+
+这和 §1.15 的审计表、§1.16 的 `canonical()` 是同一类问题的第三种形态：
+**声明存在，实现缺席。**
+
+#### 为什么先做轮询而不是企微卡片
+
+事实来源必须是数据库，通知渠道是**可替换的一层**。
+反过来做（把闸门写成企微客户端）会让审批的正确性依赖一个外部服务的可用性——
+**企微不可达时高危操作就该被放行吗？不该。**
+
+#### 接口签名必须改
+
+原签名 `await(idempotencyKey, policy, args)` 里
+**没有任何一个参数能提供 `trace_id`**，而 `approval_record.trace_id` 是 NOT NULL。
+也就是说，任何按原签名写的实现都只能往 `trace_id` 里塞假值。
+
+**接口的参数列表既可能少给也可能多给**（§1.15 是签名给不出必填列，
+这次是签名根本没有那个参数的来源）。补上 `ToolAuditContext` 之后实现才能诚实地落库。
+
+#### `ApprovalDecision` 多一个 `PENDING`
+
+V2 的列注释只写了 `GRANTED / REJECTED / TIMED_OUT`，那是按「审批已结束」想的。
+但契约要求**在等待之前**就写记录，否则无法回答「现在有哪些操作正卡着等人批」。
+
+**少一个 PENDING 的代价不是「少一种状态」，而是卡住的审批在数据库里不可见**——
+运维只能靠告警还在烧来倒推。V8 把列注释补上了。
+
+#### 三条不可退让的性质
+
+| 性质 | 不做的后果 |
+|------|-----------|
+| **先写库再等待** | 进程在等待期间崩溃，这次审批在数据库里不存在，而操作可能已经被批了 |
+| **必须超时** | 原方案全文检索「超时」命中 0 次；审批人不在线时 `PENDING_APPROVAL` 永久卡死，告警还在烧。**超时不是「没有结论」，它是一个必须触发升级的结论**——所以写成 `TIMED_OUT`，不留永远 `PENDING` 的行 |
+| **快照必须脱敏** | DDL 注释：「必须是夹紧后且脱敏后的值；否则这次审批无效」。审批人看到密钥不是「多看到一点」，**他批的是一个他没看懂的操作** |
+
+`decide` 必须是**条件更新**（`WHERE id=? AND decision='PENDING'`）：
+两个审批人同时点批准时只有一个的 `executeUpdate()` 返回 1。
+应用层 `SELECT` 再 `UPDATE` 之间永远有窗口。
+内存版用 `ConcurrentHashMap.compute` 保持同一语义——
+**两个实现语义必须一致，否则测试通过而线上行为不同**。
+
+#### 本轮我犯了三个错，其中一个是生产数据缺陷
+
+推送三次才绿。前两次 RED：
+
+**① `GuardedToolCallback:380` —— 两次 grep 都找不到它。**
+`readOnly(...)` 工厂里还有第三个 `ApprovalGate` lambda：`(k, p, a) -> Approval.granted("auto")`。
+
+- `grep "implements ApprovalGate"` → **lambda 不 implements 任何东西**
+- `grep "(key, policy, args) ->"` → 这里写的是 `k, p, a`
+
+**lambda 不会在代码里写出它实现的接口名**，所以「改一个函数式接口的签名」
+不能靠搜接口名找实现点。要搜返回类型（`-> Approval.`），
+或者干脆让编译器找——这次就是编译器找到的。
+
+**② `Instant.EPOCH` 被当决定时刻写进了库。** 这条最严重，
+因为它不是测试问题，是**生产数据缺陷**：
+
+```
+IllegalArgumentException: decidedAt 不能早于 requestedAt：
+1970-01-01T00:00:00Z < 2026-09-06T16:15:01.414270Z
+    at ApprovalRecord.<init>(ApprovalRecord.java:104)
+    at JdbcApprovalRecordStore.map(JdbcApprovalRecordStore.java:227)
+```
+
+我造了个「探针」对象去校验不变量，两个时间都填 `Instant.EPOCH`，
+校验完却拿 `probe.decidedAt()` 去写库——
+于是**每一行的 `decided_at` 都是 1970-01-01**。
+
+**这张表的保留期是永久的、是责任归属的唯一凭据。**
+`decided_at` 全填 1970 意味着「谁在什么时候批的」这个「什么时候」全是假的。
+如果不是 `find()` 也走 `ApprovalRecord` 构造校验（读侧的纵深防御），
+这批脏数据会一直躺在库里没人发现。
+
+**③ 「探针」这个词本身就有误导性。**
+`decideRejectsSelfApproval` 期望 `IllegalArgumentException`，
+实际拿到的是 H2 撞 `chk_approval_not_self` 后包出来的 `IllegalStateException`。
+原因：探针的 `requester` 是我凭空填的 `"probe-requester"`，
+而真实记录的是 `"alice"`。`"alice" != "probe-requester"`，
+所以自批那条检查在探针里**永远通过**，只能靠数据库的 CHECK 兜底。
+
+一般化：`ApprovalRecord` 有两条**跨字段**不变量
+（`approver <> requester`、`decidedAt >= requestedAt`）。
+用凭空构造的对象只能验**一元**不变量（比如 `TIMED_OUT` 不该带审批人）。
+**跨字段的那条必须读真实行才验得到。**
+「探针」听起来像能验一切，其实只能验单字段的形状。
+
+修：`decide` 先 `find` 出真实行，用它的 `requester` / `requestedAt` 构造校验对象。
+先读一行**不会**破坏并发保证——读只为校验，
+真正的写入仍然是 `WHERE decision='PENDING'`，
+读与写之间若有人抢先决定，本次 `executeUpdate()` 返回 0，不会覆盖别人的结论。
+（`decideAppliesOnlyOnce` 验的正是这个：第二个人的 `REJECTED` 不能覆盖第一个人的 `GRANTED`。）
+
+#### V8 迁移：只加注释和索引，不改类型
+
+- `decision` 注释补 `PENDING`，并写清 `TIMED_OUT` 的 `approver` 必须为空
+  （**没有人做过这个决定，填人名等于伪造责任归属**）
+- `args_snapshot` 注释把后果说清楚：不是「不够好」，是这次审批不成立
+- `idx_approval_pending` 用**部分索引**（`WHERE decision = 'PENDING'`）：
+  这张表永久保留、行数只增不减，而 `PENDING` 行任何时刻只有几十条，
+  历史行完全不占索引空间，而查询恰好只关心这几行
+- `idx_approval_trace` / `idx_approval_requester`：复盘必问「这次操作谁批的」
+
+#### 测试两侧都守（43 条 / 3 类）
+
+- `ApprovalRecordTest` 16：每个结论的字段形状都在构造期钉死，
+  含自批、`GRANTED` 缺审批人、`TIMED_OUT` 带审批人
+- `JdbcApprovalRecordStoreTest` 13：H2 真库，**建表语句从 V2 迁移文件里抽**
+  （用类里的 `CREATE_TABLE_SQL` 常量建表，测的是 DDL 的副本，生产上跑的 V2 没人验证）
+- `PollingApprovalGateTest` 14：注入 `Clock` 测超时
+  （真的睡到超时的测试既慢又随机）
+
+其中 `doesNotOverwriteALateApproval` 我第一版也写错了：
+把竞态注入放在 `find` 上，循环第一次就会看到 `GRANTED` 并直接返回，
+**永远走不到 `decide()` 返回 `false` 那条路径**——测试会绿，但什么也没测到。
+改成注入在 `decide` 上才真正覆盖。
+
+#### 本轮改动的数字（`46ce97a`，run `34045002622` 已实测）
+
+| 指标 | `1008614` 实测 | 预测 | **实测** |
+|------|---------------|------|---------|
+| 测试类 / 报告文件 | 39 | 42 | **42** ✅ |
+| 测试用例 | 573 | 616 | **616** ✅ |
+| `oncall-tool-gateway` | 202 / 15 类 | 245 / 18 类 | **245 / 18** ✅ |
+| 生产类合计 | 127 | 133 | **133** ✅ |
+| `implements ApprovalGate`（`src/main`） | 0 | 1 | **1** ✅ |
+| DDL 表数 / 约束 | 19 / 4-4 | 19 / 4-4 | **19 / 4-4** ✅ |
+
+失败 0、错误 0、跳过 0。**推送三次**：
+`d9d23ea` 编译不过（3 处）→ `846cbcb` 3 条测试红 → `46ce97a` 绿。
 
 ---
 
@@ -1613,7 +1758,7 @@ return json.replaceAll("\\s+", "");
 | `JsonScaleArgsAdapter` | 把 `String` JSON 转成 `ScaleRequest`（需 Jackson），并实现 `ArgClamper` 接口 |
 | ~~`JdbcToolAuditLog`~~ | ✅ **已落地**（§1.15）。原先的写法（"`idempotency_key` 加 UNIQUE，因为内存版在多实例下幂等会失效"）**已作废**：幂等已由 `tool_execution_claim`（V7）+ `JdbcToolExecutionLedger` 独立解决，审计表不该也不能承担它。它真正的安全含义是审计自身的持久性，而阻塞点是接口签名给不出表的必填列——已由 `ToolAuditContext` / `ToolAuditEvent` 解开 |
 | ~~规范化升级~~ | ✅ **已落地**（§1.16）。原先 `canonical()` 的 javadoc 写着「key 排序 + 去空白」而实现只去空白，导致键顺序不同的等价参数算出两个幂等键、幂等静默失效。现由 `JsonCanonicalizer` 承担 |
-| `WecomApprovalGate` | 企微卡片 + `expires_at` + 超时升级 + 双人复核 |
+| `WecomApprovalGate` | 企微卡片 + 超时升级 + 双人复核。**不要写 `expires_at`**——`approval_record` **没有这个列**（本表曾要求写它，那是错的，见 §1.17）。到期时刻由 `requested_at + ToolPolicy.approvalTimeout()` 算；把算出来的值存成列，会在策略改动后与事实不一致。通知渠道是<b>可替换的一层</b>：事实来源是数据库，企微只是催人的手段 |
 | `AutonomyLevel` 接入调用链 | 与 `KillSwitch` 取交集：先 `assertAllowed()` 再 `canAutoExecute()` |
 
 **已完成**：`GuardedToolCallbackTest`（30 个用例，见下）、
