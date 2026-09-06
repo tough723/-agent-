@@ -1,6 +1,8 @@
 package com.oncall.toolgateway;
 
+import com.oncall.domain.tool.RiskLevel;
 import com.oncall.domain.tool.ToolDeniedException;
+import com.oncall.domain.tool.ToolSource;
 import com.oncall.domain.tool.ToolPolicy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -29,6 +31,9 @@ class GuardedToolCallbackTest {
 
     private static final String TOOL = "scale_replicas";
     private static final String READ_TOOL = "query_metrics";
+    /** 审计上下文：trace_id 是 NOT NULL，且必须能指回触发这次调用的排查。 */
+    private static final ToolAuditContext CTX =
+            new ToolAuditContext("trace-gtc", "run-1", "step-1", "alice");
 
     private ToolPolicyEngine policyEngine;
     private KillSwitch killSwitch;
@@ -77,7 +82,7 @@ class GuardedToolCallbackTest {
 
         GuardedToolCallback guarded = new GuardedToolCallback(
                 RecordingTool.ok("sneaky_mcp_tool", "x"), engine, killSwitch,
-                autoApprove(), audit, idempotency, ledger, ArgClamper.NOOP, "run-1", 1);
+                autoApprove(), audit, CTX, idempotency, ledger, ArgClamper.NOOP, "run-1", 1);
 
         assertThatThrownBy(() -> guarded.call("{}")).isInstanceOf(ToolDeniedException.class);
         assertThat(denied).containsExactly("sneaky_mcp_tool:not in allowlist");
@@ -167,9 +172,14 @@ class GuardedToolCallbackTest {
 
         guard(RecordingTool.ok(TOOL, "scaled"), clamper, autoApprove()).call("{\"replicas\":0}");
 
-        assertThat(audit.events).anyMatch(e -> e.startsWith("CLAMPED:"));
-        assertThat(audit.lastClampedRaw).isEqualTo("{\"replicas\":0}");
-        assertThat(audit.lastClampedNew).isEqualTo("{\"replicas\":2}");
+        assertThat(audit.countOf(GateOutcome.CLAMPED)).isEqualTo(1);
+        ToolAuditEvent ev = audit.last(GateOutcome.CLAMPED);
+        // args_masked 放越界的原始参数，result_masked 放夹紧后的——两者都已过脱敏
+        assertThat(ev.argsMasked()).isEqualTo("{\"replicas\":0}");
+        assertThat(ev.resultMasked()).isEqualTo("{\"replicas\":2}");
+        assertThat(ev.toolSource()).isEqualTo(ToolSource.LOCAL);
+        assertThat(ev.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(ev.context().traceId()).isEqualTo("trace-gtc");
     }
 
     @Test
@@ -178,7 +188,7 @@ class GuardedToolCallbackTest {
         guard(RecordingTool.ok(TOOL, "scaled"), ArgClamper.NOOP, autoApprove())
                 .call("{\"replicas\":2}");
 
-        assertThat(audit.events).noneMatch(e -> e.startsWith("CLAMPED:"));
+        assertThat(audit.countOf(GateOutcome.CLAMPED)).isZero();
     }
 
     @Test
@@ -337,8 +347,11 @@ class GuardedToolCallbackTest {
 
         assertThat(tool.calls).isZero();
         assertThat(result).contains("\"denied\":true").contains("变更窗口内禁止扩容").contains("hint");
-        assertThat(audit.events).anyMatch(e -> e.startsWith("APPROVAL:"));
-        assertThat(audit.lastApproval.approved()).isFalse();
+        // 审批被拒 = 关卡结论 DENIED。审批本身（谁申请、谁批）属于 approval_record，
+        // 所以这里不再有一条独立的 APPROVAL 事件——同一个事实不该存两份。
+        assertThat(audit.countOf(GateOutcome.DENIED)).isEqualTo(1);
+        assertThat(audit.last(GateOutcome.DENIED).deniedReason()).isEqualTo("变更窗口内禁止扩容");
+        assertThat(audit.countOf(GateOutcome.PASSED)).as("被拒就不该有放行记录").isZero();
     }
 
     @Test
@@ -385,9 +398,11 @@ class GuardedToolCallbackTest {
 
         guard(tool, ArgClamper.NOOP, autoApprove()).call("{\"service\":\"order\"}");
 
-        assertThat(audit.events).anyMatch(e -> e.startsWith("SUCCESS:"));
-        assertThat(audit.lastResult).isEqualTo("cpu=95%");
-        assertThat(audit.lastArgs).isEqualTo("{\"service\":\"order\"}");
+        assertThat(audit.countOf(GateOutcome.PASSED)).isEqualTo(1);
+        ToolAuditEvent ev = audit.last(GateOutcome.PASSED);
+        assertThat(ev.resultMasked()).isEqualTo("cpu=95%");
+        assertThat(ev.argsMasked()).isEqualTo("{\"service\":\"order\"}");
+        assertThat(ev.durationMs()).as("审计要能统计工具耗时").isNotNull();
         assertThat(ledger.size()).isEqualTo(1);
     }
 
@@ -400,8 +415,11 @@ class GuardedToolCallbackTest {
         assertThatThrownBy(() -> guard(tool, ArgClamper.NOOP, autoApprove()).call("{\"replicas\":3}"))
                 .isSameAs(boom);
 
-        assertThat(audit.events).anyMatch(e -> e.startsWith("FAILURE:"));
-        assertThat(audit.lastError).isSameAs(boom);
+        // 执行失败不是关卡拦截，所以 gate_outcome 仍是 PASSED（见 GateOutcome 说明），
+        // 失败这个事实记在 result_masked 里。
+        assertThat(audit.countOf(GateOutcome.PASSED)).isEqualTo(1);
+        assertThat(audit.last(GateOutcome.PASSED).resultMasked())
+                .contains("IllegalStateException").contains("下游超时");
         assertThat(ledger.size()).as("失败的执行不能被当成可重放的成功结果").isZero();
     }
 
@@ -428,7 +446,11 @@ class GuardedToolCallbackTest {
                 .isInstanceOf(ToolDeniedException.class);
 
         assertThat(clamper.calls).as("被禁工具不应触发夹紧").isZero();
-        assertThat(audit.events).noneMatch(e -> e.startsWith("CLAMPED:"));
+        assertThat(audit.countOf(GateOutcome.CLAMPED)).isZero();
+        // kill switch 拦下必须留痕——这是原先缺失的一条：
+        // 所有审计调用点都写在放行之后，于是最该记录的安全事件反而没被记录。
+        assertThat(audit.countOf(GateOutcome.DENIED)).as("kill switch 拦下必须落审计").isEqualTo(1);
+        assertThat(audit.last(GateOutcome.DENIED).deniedReason()).contains("write tool blocked");
     }
 
     @Test
@@ -452,7 +474,7 @@ class GuardedToolCallbackTest {
         RecordingTool tool = RecordingTool.ok(READ_TOOL, "metrics");
 
         GuardedToolCallback guarded = GuardedToolCallback.readOnly(
-                tool, policyEngine, killSwitch, audit, idempotency, ledger, "run-1", 1);
+                tool, policyEngine, killSwitch, audit, CTX, idempotency, ledger, "run-1", 1);
 
         assertThat(guarded.call("{}")).isEqualTo("metrics");
         assertThat(tool.calls).isEqualTo(1);
@@ -473,12 +495,12 @@ class GuardedToolCallbackTest {
 
     private GuardedToolCallback guard(ToolCallback delegate, ArgClamper clamper, ApprovalGate gate) {
         return new GuardedToolCallback(delegate, policyEngine, killSwitch, gate,
-                audit, idempotency, ledger, clamper, "run-1", 1);
+                audit, CTX, idempotency, ledger, clamper, "run-1", 1);
     }
 
     private GuardedToolCallback guardStep(ToolCallback delegate, int step) {
         return new GuardedToolCallback(delegate, policyEngine, killSwitch, autoApprove(),
-                audit, idempotency, ledger, ArgClamper.NOOP, "run-1", step);
+                audit, CTX, idempotency, ledger, ArgClamper.NOOP, "run-1", step);
     }
 
     private static ApprovalGate autoApprove() {
@@ -527,45 +549,33 @@ class GuardedToolCallbackTest {
         }
     }
 
-    /** 记录全部审计事件的假审计日志，同时充当幂等结果存储。 */
+    /**
+     * 记录全部审计事件的假审计日志。
+     *
+     * <p>刻意存 {@link ToolAuditEvent} 而不是格式化字符串：
+     * 断言写在真实类型上，才能顺带验到关卡结论、来源与风险级——
+     * 而这些正是原先那 5 个 {@code recordXxx} 方法给不出来、
+     * 导致 {@code JdbcToolAuditLog} 一直写不出来的字段。
+     */
     private static final class RecordingAudit implements ToolAuditLog {
-        final List<String> events = new ArrayList<>();
-        String lastClampedRaw;
-        String lastClampedNew;
-        Approval lastApproval;
-        String lastResult;
-        String lastArgs;
-        Throwable lastError;
+        final List<ToolAuditEvent> events = new ArrayList<>();
 
         @Override
-        public void recordApproval(String idempotencyKey, Approval approval) {
-            events.add("APPROVAL:" + idempotencyKey);
-            lastApproval = approval;
+        public void record(ToolAuditEvent event) {
+            events.add(event);
         }
 
-        @Override
-        public void recordSuccess(String idempotencyKey, String toolName, String args, String result) {
-            events.add("SUCCESS:" + idempotencyKey);
-            lastResult = result;
-            lastArgs = args;
+        long countOf(GateOutcome outcome) {
+            return events.stream().filter(e -> e.gateOutcome() == outcome).count();
         }
 
-        @Override
-        public void recordFailure(String idempotencyKey, String toolName, String args, Throwable error) {
-            events.add("FAILURE:" + idempotencyKey);
-            lastError = error;
-        }
-
-        @Override
-        public void recordClamped(String idempotencyKey, String toolName, String rawArgs, String clampedArgs) {
-            events.add("CLAMPED:" + idempotencyKey);
-            lastClampedRaw = rawArgs;
-            lastClampedNew = clampedArgs;
-        }
-
-        @Override
-        public void recordDenied(String toolName, String reason) {
-            events.add("DENIED:" + toolName + ":" + reason);
+        ToolAuditEvent last(GateOutcome outcome) {
+            for (int i = events.size() - 1; i >= 0; i--) {
+                if (events.get(i).gateOutcome() == outcome) {
+                    return events.get(i);
+                }
+            }
+            return null;
         }
     }
 

@@ -7,6 +7,10 @@ import com.oncall.toolgateway.ArgClamper;
 import com.oncall.toolgateway.GuardedToolCallback;
 import com.oncall.toolgateway.IdempotencyStore;
 import com.oncall.toolgateway.KillSwitch;
+import com.oncall.domain.tool.RiskLevel;
+import com.oncall.domain.tool.ToolSource;
+import com.oncall.toolgateway.ToolAuditContext;
+import com.oncall.toolgateway.ToolAuditEvent;
 import com.oncall.toolgateway.ToolAuditLog;
 import com.oncall.toolgateway.ToolExecutionLedger;
 import com.oncall.toolgateway.ToolPolicyEngine;
@@ -68,6 +72,14 @@ public final class McpToolRegistrar {
     private final IdempotencyStore idempotencyStore;
     private final ToolExecutionLedger ledger;
     private final ArgClamper argClamper;
+    /**
+     * 注册期审计上下文。
+     *
+     * <p>纳管发生在任何 run 之前，所以它有自己的 trace——
+     * 借用某个 run 的 trace 会把「启动时这个 server 挂了」
+     * 记到一次毫不相干的排查名下。
+     */
+    private final ToolAuditContext registrationContext;
 
     public McpToolRegistrar(McpToolCatalog catalog,
                             ToolPolicyEngine policyEngine,
@@ -76,11 +88,16 @@ public final class McpToolRegistrar {
                             ToolAuditLog auditLog,
                             IdempotencyStore idempotencyStore,
                             ToolExecutionLedger ledger,
-                            ArgClamper argClamper) {
+                            ArgClamper argClamper,
+                            ToolAuditContext registrationContext) {
         if (catalog == null || policyEngine == null || killSwitch == null
                 || approvalGate == null || auditLog == null || idempotencyStore == null
                 || ledger == null) {
             throw new IllegalArgumentException("McpToolRegistrar 的协作者不能为 null");
+        }
+        if (registrationContext == null) {
+            throw new IllegalArgumentException(
+                    "registrationContext 不能为 null：tool_audit_log.trace_id 是 NOT NULL");
         }
         this.catalog = catalog;
         this.policyEngine = policyEngine;
@@ -90,6 +107,7 @@ public final class McpToolRegistrar {
         this.idempotencyStore = idempotencyStore;
         this.ledger = ledger;
         this.argClamper = argClamper == null ? ArgClamper.NOOP : argClamper;
+        this.registrationContext = registrationContext;
     }
 
     /** 拼出对外唯一名字。 */
@@ -112,7 +130,7 @@ public final class McpToolRegistrar {
         } catch (RuntimeException e) {
             // 一个 MCP server 挂掉不应该让整个 Agent 起不来。
             // 但必须记下来：静默吞掉的话，运维只会看到"工具变少了"。
-            auditLog.recordDenied(namespacedName(server, "*"),
+            auditDenied(namespacedName(server, "*"),
                     "catalog unavailable: " + e.getClass().getSimpleName());
             return McpRegistrationResult.unavailable(server,
                     e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -158,12 +176,17 @@ public final class McpToolRegistrar {
      *
      * <p>{@code runId} 与 {@code step} 会进幂等键，所以必须按次传入，
      * 不能在纳管时固定下来。
+     *
+     * @param runContext 本次运行的审计上下文。与 {@code runId} 同理必须按次传入——
+     *                   审计行的 {@code trace_id} 要能指回触发它的那次排查，
+     *                   而纳管时固定下来的 trace 会让所有 MCP 调用共享同一个值。
      */
-    public List<ToolCallback> guardedTools(String server, String runId, int step) {
+    public List<ToolCallback> guardedTools(String server, String runId, int step,
+                                          ToolAuditContext runContext) {
         List<ToolCallback> out = new ArrayList<>();
         for (McpRegistrationResult.ManagedMcpTool t : inspect(server).accepted()) {
             out.add(new GuardedToolCallback(t.raw(), policyEngine, killSwitch, approvalGate,
-                    auditLog, idempotencyStore, ledger, argClamper, runId, step,
+                    auditLog, runContext, idempotencyStore, ledger, argClamper, runId, step,
                     t.namespacedName()));
         }
         return out;
@@ -205,12 +228,25 @@ public final class McpToolRegistrar {
         }
     }
 
+    /**
+     * 记一条注册期的 DENIED 事件。
+     *
+     * <p>风险级一律记 {@code HIGH}：走到这里的工具<b>没有策略</b>
+     * （正是因为不在白名单里才被拒），而未知风险记高只会高估，
+     * 记低会让「被拒的高危调用」在按风险级的统计里消失。
+     * 与 {@code GuardedToolCallback} 默认拒绝路径上的取值一致。
+     */
+    private void auditDenied(String namespaced, String reason) {
+        auditLog.record(ToolAuditEvent.denied(registrationContext, namespaced,
+                ToolSource.MCP, RiskLevel.HIGH, null, reason));
+    }
+
     private void reject(String server,
                         List<McpRegistrationResult.Rejected> rejected,
                         String rawName,
                         String reason) {
         rejected.add(new McpRegistrationResult.Rejected(rawName, reason));
         // 用带前缀的名字记审计：查审计的人需要知道是哪个 server 的哪个工具
-        auditLog.recordDenied(namespacedName(server, String.valueOf(rawName)), reason);
+        auditDenied(namespacedName(server, String.valueOf(rawName)), reason);
     }
 }

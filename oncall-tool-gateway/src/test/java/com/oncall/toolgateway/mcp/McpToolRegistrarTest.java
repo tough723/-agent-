@@ -7,6 +7,8 @@ import com.oncall.domain.tool.ToolSource;
 import com.oncall.toolgateway.Approval;
 import com.oncall.toolgateway.ApprovalGate;
 import com.oncall.toolgateway.ArgClamper;
+import com.oncall.toolgateway.GateOutcome;
+import com.oncall.toolgateway.ToolAuditContext;
 import com.oncall.toolgateway.InMemoryToolExecutionLedger;
 import com.oncall.toolgateway.GuardedToolCallback;
 import com.oncall.toolgateway.InMemoryToolAuditLog;
@@ -44,6 +46,10 @@ class McpToolRegistrarTest {
     private static final String SERVER = "cmdb";
     private static final String RAW = "restart_service";
     private static final String NAMESPACED = "mcp:cmdb:restart_service";
+    /** 注册期上下文；run 上下文另给，两者刻意不同——见 McpToolRegistrar 的字段注释。 */
+    private static final ToolAuditContext REG_CTX = ToolAuditContext.of("trace-mcp-reg");
+    private static final ToolAuditContext RUN_CTX =
+            new ToolAuditContext("trace-mcp-run", "run-1", null, null);
 
     private StaticMcpToolCatalog catalog;
     private ToolPolicyEngine policyEngine;
@@ -80,7 +86,7 @@ class McpToolRegistrarTest {
                 new InMemoryToolPolicyChangeAudit());
         registrar = new McpToolRegistrar(catalog, policyEngine, killSwitch,
                 autoApprove(), audit, new Sha256IdempotencyStore(),
-                ledger, ArgClamper.NOOP);
+                ledger, ArgClamper.NOOP, REG_CTX);
     }
 
     private static ToolPolicy mcpPolicy(String namespacedName, RiskLevel risk) {
@@ -120,7 +126,13 @@ class McpToolRegistrarTest {
         assertThat(result.rejected().get(0).rawName()).isEqualTo(RAW);
         assertThat(result.rejected().get(0).reason()).isEqualTo("not in allowlist");
         // 静默丢弃的话，没人会知道 server 悄悄多提供了一个工具
-        assertThat(audit.events()).anyMatch(e -> e.startsWith("DENIED:" + NAMESPACED));
+        assertThat(audit.countOf(GateOutcome.DENIED)).isEqualTo(1);
+        assertThat(audit.ofTool(NAMESPACED).get(0).deniedReason()).isEqualTo("not in allowlist");
+        assertThat(audit.ofTool(NAMESPACED).get(0).toolSource())
+                .as("来源必须写清楚是 MCP，否则远端工具与本地工具在审计里分不开")
+                .isEqualTo(ToolSource.MCP);
+        assertThat(audit.ofTool(NAMESPACED).get(0).context().traceId())
+                .isEqualTo("trace-mcp-reg");
     }
 
     @Test
@@ -223,7 +235,7 @@ class McpToolRegistrarTest {
         assertThat(result.catalogError()).contains("IllegalStateException");
         assertThat(result.acceptedCount()).isZero();
         // 但必须留下痕迹，否则运维只会看到"工具变少了"
-        assertThat(audit.countOf("DENIED:")).isEqualTo(1);
+        assertThat(audit.countOf(GateOutcome.DENIED)).isEqualTo(1);
     }
 
     @Test
@@ -244,7 +256,7 @@ class McpToolRegistrarTest {
         givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         catalog.withServer(SERVER, StubToolCallback.named(RAW));
 
-        List<ToolCallback> tools = registrar.guardedTools(SERVER, "run-1", 1);
+        List<ToolCallback> tools = registrar.guardedTools(SERVER, "run-1", 1, RUN_CTX);
 
         assertThat(tools).hasSize(1);
         assertThat(tools.get(0).getToolDefinition().name()).isEqualTo(NAMESPACED);
@@ -257,7 +269,7 @@ class McpToolRegistrarTest {
         givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         catalog.withServer(SERVER, StubToolCallback.named(RAW));
 
-        ToolCallback guarded = registrar.guardedTools(SERVER, "run-1", 1).get(0);
+        ToolCallback guarded = registrar.guardedTools(SERVER, "run-1", 1, RUN_CTX).get(0);
 
         assertThat(guarded.getToolDefinition().description()).contains(RAW);
         assertThat(guarded.getToolDefinition().inputSchema()).isEqualTo("{\"type\":\"object\"}");
@@ -270,13 +282,16 @@ class McpToolRegistrarTest {
         StubToolCallback stub = StubToolCallback.named(RAW);
         catalog.withServer(SERVER, stub);
 
-        ToolCallback guarded = registrar.guardedTools(SERVER, "run-1", 1).get(0);
+        ToolCallback guarded = registrar.guardedTools(SERVER, "run-1", 1, RUN_CTX).get(0);
         String result = guarded.call("{}");
 
         // 如果查的是原始名 restart_service，白名单里没有它，默认拒绝会抛异常
         assertThat(result).isEqualTo("ok:" + RAW);
         assertThat(stub.calls).isEqualTo(1);
-        assertThat(audit.events()).contains("SUCCESS:" + NAMESPACED);
+        assertThat(audit.countOf(GateOutcome.PASSED)).isEqualTo(1);
+        assertThat(audit.ofTool(NAMESPACED).get(0).context().traceId())
+                .as("run 期调用必须记在 run 的 trace 上，不是注册期那个")
+                .isEqualTo("trace-mcp-run");
     }
 
     @Test
@@ -284,7 +299,7 @@ class McpToolRegistrarTest {
     void revokingPolicyImmediatelyDenies() {
         givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         catalog.withServer(SERVER, StubToolCallback.named(RAW));
-        ToolCallback guarded = registrar.guardedTools(SERVER, "run-1", 1).get(0);
+        ToolCallback guarded = registrar.guardedTools(SERVER, "run-1", 1, RUN_CTX).get(0);
 
         // 撤销是收紧方向 ⇒ 治理层直接放行，不需要第二个人。
         // 走治理而不是直接调 revoke：那条路已经被可见性封死了。
@@ -301,7 +316,7 @@ class McpToolRegistrarTest {
     void killSwitchAppliesToMcpTools() {
         givenPolicies(mcpPolicy("mcp:cmdb:scale", RiskLevel.LOW));
         catalog.withServer(SERVER, StubToolCallback.named("scale"));
-        ToolCallback guarded = registrar.guardedTools(SERVER, "run-1", 1).get(0);
+        ToolCallback guarded = registrar.guardedTools(SERVER, "run-1", 1, RUN_CTX).get(0);
 
         killSwitch.set(RunMode.READ_ONLY);
 
@@ -314,7 +329,7 @@ class McpToolRegistrarTest {
         givenPolicies(mcpPolicy(NAMESPACED, RiskLevel.READ_ONLY));
         catalog.withServer(SERVER, StubToolCallback.named(RAW));
 
-        for (ToolCallback t : registrar.guardedTools(SERVER, "run-1", 1)) {
+        for (ToolCallback t : registrar.guardedTools(SERVER, "run-1", 1, RUN_CTX)) {
             assertThat(t).isInstanceOf(GuardedToolCallback.class);
             assertThat(((GuardedToolCallback) t).toolName()).isEqualTo(NAMESPACED);
         }
@@ -325,7 +340,7 @@ class McpToolRegistrarTest {
     void unregisteredToolIsNeverExecutable() {
         catalog.withServer(SERVER, StubToolCallback.named("rogue"));
 
-        assertThat(registrar.guardedTools(SERVER, "run-1", 1)).isEmpty();
+        assertThat(registrar.guardedTools(SERVER, "run-1", 1, RUN_CTX)).isEmpty();
     }
 
     @Test
@@ -335,10 +350,10 @@ class McpToolRegistrarTest {
         StubToolCallback stub = StubToolCallback.named(RAW);
         catalog.withServer(SERVER, stub);
 
-        registrar.guardedTools(SERVER, "run-1", 1).get(0).call("{}");
-        registrar.guardedTools(SERVER, "run-1", 2).get(0).call("{}");
+        registrar.guardedTools(SERVER, "run-1", 1, RUN_CTX).get(0).call("{}");
+        registrar.guardedTools(SERVER, "run-1", 2, RUN_CTX).get(0).call("{}");
         // 同一 run 同一 step 的重放不应再次真正执行
-        registrar.guardedTools(SERVER, "run-1", 2).get(0).call("{}");
+        registrar.guardedTools(SERVER, "run-1", 2, RUN_CTX).get(0).call("{}");
 
         assertThat(stub.calls).isEqualTo(2);
     }
@@ -348,11 +363,16 @@ class McpToolRegistrarTest {
     void nullCollaboratorRejected() {
         assertThatThrownBy(() -> new McpToolRegistrar(null, policyEngine, killSwitch,
                 autoApprove(), audit, new Sha256IdempotencyStore(),
-                new InMemoryToolExecutionLedger(), ArgClamper.NOOP))
+                new InMemoryToolExecutionLedger(), ArgClamper.NOOP, REG_CTX))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new McpToolRegistrar(catalog, policyEngine, killSwitch,
-                autoApprove(), audit, new Sha256IdempotencyStore(), null, ArgClamper.NOOP))
+                autoApprove(), audit, new Sha256IdempotencyStore(), null, ArgClamper.NOOP, REG_CTX))
                 .as("缺了执行账本会让多实例下的幂等静默失效，必须立即失败")
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new McpToolRegistrar(catalog, policyEngine, killSwitch,
+                autoApprove(), audit, new Sha256IdempotencyStore(),
+                new InMemoryToolExecutionLedger(), ArgClamper.NOOP, null))
+                .as("审计上下文为 null 会让 tool_audit_log.trace_id 写不进去，必须立即失败")
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

@@ -1,7 +1,9 @@
 package com.oncall.toolgateway;
 
+import com.oncall.domain.tool.RiskLevel;
 import com.oncall.domain.tool.ToolDeniedException;
 import com.oncall.domain.tool.ToolPolicy;
+import com.oncall.domain.tool.ToolSource;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
@@ -36,6 +38,7 @@ public class GuardedToolCallback implements ToolCallback {
     private final KillSwitch killSwitch;
     private final ApprovalGate approvalGate;
     private final ToolAuditLog auditLog;
+    private final ToolAuditContext auditContext;
     private final IdempotencyStore idempotencyStore;
     private final ToolExecutionLedger ledger;
     private final ArgClamper argClamper;
@@ -48,12 +51,13 @@ public class GuardedToolCallback implements ToolCallback {
                               KillSwitch killSwitch,
                               ApprovalGate approvalGate,
                               ToolAuditLog auditLog,
+                              ToolAuditContext auditContext,
                               IdempotencyStore idempotencyStore,
                               ToolExecutionLedger ledger,
                               ArgClamper argClamper,
                               String runId,
                               int step) {
-        this(delegate, policyEngine, killSwitch, approvalGate, auditLog,
+        this(delegate, policyEngine, killSwitch, approvalGate, auditLog, auditContext,
                 idempotencyStore, ledger, argClamper, runId, step, null);
     }
 
@@ -68,6 +72,7 @@ public class GuardedToolCallback implements ToolCallback {
                               KillSwitch killSwitch,
                               ApprovalGate approvalGate,
                               ToolAuditLog auditLog,
+                              ToolAuditContext auditContext,
                               IdempotencyStore idempotencyStore,
                               ToolExecutionLedger ledger,
                               ArgClamper argClamper,
@@ -79,6 +84,15 @@ public class GuardedToolCallback implements ToolCallback {
         this.killSwitch = killSwitch;
         this.approvalGate = approvalGate;
         this.auditLog = auditLog;
+        if (auditContext == null) {
+            // 与上面 ledger 的判空同理：给一个默认上下文（例如固定 traceId）
+            // 等于让审计表里所有行的 trace 都是同一个占位串——
+            // 那比写不进数据库更难发现，因为它"看起来有数据"。
+            throw new IllegalArgumentException(
+                    "ToolAuditContext 不能为 null：tool_audit_log.trace_id 是 NOT NULL，"
+                            + "而占位 trace 会让整张审计表失去关联能力");
+        }
+        this.auditContext = auditContext;
         this.idempotencyStore = idempotencyStore;
         if (ledger == null) {
             // 不给默认实现：默认给一个内存账本，等于让"忘了接数据库"
@@ -142,15 +156,39 @@ public class GuardedToolCallback implements ToolCallback {
         String toolName = effectiveName();
 
         // ① 默认拒绝
-        ToolPolicy policy = policyEngine.resolve(toolName);
+        //
+        // 【拦下本身必须审计】原先这里直接让异常穿出去，于是「未注册工具被拒」——
+        // 也就是工具投毒的第一道防线真正触发的那一刻——在审计表里没有任何痕迹。
+        // 最该被记录的安全事件反而是唯一没被记录的，原因很朴素：
+        // 所有审计调用点都写在「放行之后」。
+        ToolPolicy policy;
+        try {
+            policy = policyEngine.resolve(toolName);
+        } catch (ToolDeniedException e) {
+            // 没有策略，也就没有来源与风险级。
+            // 来源按名字前缀推断（I14 不变量：mcp: 前缀 ⇔ source()==MCP，由 ArchUnit 守着），
+            // 这是默认拒绝路径上唯一可得的信号。
+            // 风险级记 HIGH：未注册工具的风险是未知的，记高只会高估，
+            // 而记低会让「被拒的高危调用」在按风险级的统计里彻底消失。
+            auditLog.record(ToolAuditEvent.denied(auditContext, toolName, inferSource(toolName),
+                    RiskLevel.HIGH, ArgMasker.mask(toolInput), e.reason()));
+            throw e;
+        }
 
-        // ② kill switch
-        killSwitch.assertAllowed(toolName, policy.risk());
+        // ② kill switch —— 同样是「拦下了却没记」的路径
+        try {
+            killSwitch.assertAllowed(toolName, policy.risk());
+        } catch (ToolDeniedException e) {
+            auditLog.record(ToolAuditEvent.denied(auditContext, toolName, policy.source(),
+                    policy.risk(), ArgMasker.mask(toolInput), e.reason()));
+            throw e;
+        }
 
         // ③ 参数夹紧
         String args = argClamper.clamp(toolName, toolInput);
         if (!args.equals(toolInput)) {
-            auditLog.recordClamped(key(toolName, args), toolName, toolInput, args);
+            auditLog.record(ToolAuditEvent.clamped(auditContext, toolName, policy.source(),
+                    policy.risk(), ArgMasker.mask(toolInput), ArgMasker.mask(args)));
         }
 
         // ④ 幂等：抢占执行权。
@@ -164,11 +202,22 @@ public class GuardedToolCallback implements ToolCallback {
         if (!ledger.claim(key, toolName)) {
             String prior = ledger.resultOf(key);
             if (prior != null) {
-                return prior;   // 重放：直接返回上次结果，不再真正执行
+                // 重放：直接返回上次结果，不再真正执行。
+                //
+                // 【刻意不记审计】工具这一次没有被执行，而审计表记的是
+                // 「哪道关卡对哪次执行做了什么结论」。给重放补一行 PASSED 会让人
+                // 以为工具跑了两次；补一行 DENIED 会让人以为有一次被安全机制拦下。
+                // 两种都会让「工具实际执行了几次」这个最关键的统计失真。
+                // 重放次数属于幂等账本与指标的职责，不属于审计流水。
+                return prior;
             }
             // 已被抢占但还没有结果 = 另一次执行正在进行中。
             // 绝不并发执行同一个写操作——宁可让本次失败。
             // 二次扩容、二次重启是会出真事故的，而"这次调用失败了"只是重试一次。
+            //
+            // 这也是一次拦下，同样要留痕（与 ① ② 同理）。
+            auditLog.record(ToolAuditEvent.denied(auditContext, toolName, policy.source(),
+                    policy.risk(), ArgMasker.mask(args), "duplicate in-flight call"));
             throw new ToolDeniedException(toolName, "duplicate in-flight call");
         }
 
@@ -178,8 +227,16 @@ public class GuardedToolCallback implements ToolCallback {
             // ⑤ 审批闸门（带超时；超时 = 升级，不是卡死）
             if (policy.requiresApproval()) {
                 Approval approval = approvalGate.await(key, policy, args);
-                auditLog.recordApproval(key, approval);
                 if (!approval.approved()) {
+                    // 批准的审批不单独成行：审批本身（谁申请、谁批、何时）属于
+                    // approval_record，那里才是责任归属的凭据；在审计流水里再记一条
+                    // APPROVED 等于同一个事实存两份，而两份迟早不一致。
+                    // 这里只记「关卡结论」：拒绝 = DENIED，超时 = TIMED_OUT。
+                    auditLog.record(approval.expired()
+                            ? ToolAuditEvent.timedOut(auditContext, toolName, policy.source(),
+                                    policy.risk(), ArgMasker.mask(args), approvalReason(approval))
+                            : ToolAuditEvent.denied(auditContext, toolName, policy.source(),
+                                    policy.risk(), ArgMasker.mask(args), approvalReason(approval)));
                     // 把拒绝原因返回给模型，让它改走别的路径，而不是整个 run 崩掉。
                     // 释放执行权：审批被拒不是"执行过了"，同一个请求换了审批人应该能再来。
                     ledger.release(key);
@@ -188,6 +245,7 @@ public class GuardedToolCallback implements ToolCallback {
             }
 
             // ⑥⑦ 执行 + 审计
+            long startedAtNanos = System.nanoTime();
             try {
                 String result = (toolContext == null)
                         ? delegate.call(args)
@@ -195,13 +253,21 @@ public class GuardedToolCallback implements ToolCallback {
                 // 先记账本，再写审计。
                 // 反过来的话，一旦审计存储写入失败，这次已经成功的执行就没有
                 // 可重放的记录，下一次重试会真的再执行一遍 —— 而扩容不是幂等操作。
-                // 顺序反过来之后即使 recordSuccess 抛异常，release 也只删 CLAIMED 的行，
+                // 顺序反过来之后即使审计写入抛异常，release 也只删 CLAIMED 的行，
                 // 已完成的记录保得住。
                 ledger.complete(key, result);
-                auditLog.recordSuccess(key, toolName, args, result);
+                auditLog.record(ToolAuditEvent.passed(auditContext, toolName, policy.source(),
+                        policy.risk(), ArgMasker.mask(args), ArgMasker.mask(result),
+                        elapsedMs(startedAtNanos)));
                 return result;
             } catch (RuntimeException e) {
-                auditLog.recordFailure(key, toolName, args, e);
+                // 执行失败**不是**关卡拦截，所以 gate_outcome 仍是 PASSED
+                // （见 GateOutcome 对「为什么没有 FAILED」的说明）；
+                // 失败这个事实记在 result_masked 里。
+                auditLog.record(ToolAuditEvent.passed(auditContext, toolName, policy.source(),
+                        policy.risk(), ArgMasker.mask(args),
+                        ArgMasker.mask("error: " + e.getClass().getName() + ": " + e.getMessage()),
+                        elapsedMs(startedAtNanos)));
                 // 失败必须可重试：删掉抢占行，否则这个幂等键就废了
                 ledger.release(key);
                 throw e;
@@ -210,7 +276,7 @@ public class GuardedToolCallback implements ToolCallback {
             // 兜底释放。走到这里有三种情况：
             //   a) 审批闸门自己抛异常（例如企微不可达）—— 必须释放，否则永久卡死；
             //   b) 审批被拒 —— 上面已经 release 过，这里 release 是幂等的空操作；
-            //   c) complete() 已经成功、随后 recordSuccess 抛异常 ——
+            //   c) complete() 已经成功、随后审计写入抛异常 ——
             //      这种情况**绝对不能**释放，否则一次已经成功的扩容会失去可重放记录。
             // 用 isCompleted 把 c 与 a 区分开，而不是靠"谁先谁后"的心算。
             if (!ledger.isCompleted(key)) {
@@ -218,6 +284,38 @@ public class GuardedToolCallback implements ToolCallback {
             }
             throw e;
         }
+    }
+
+    /**
+     * 按名字前缀推断来源。
+     *
+     * <p>只在拿不到策略时用（默认拒绝路径）。有策略时一律用 {@code policy.source()}——
+     * 那才是事实来源，前缀只是它的一个可见后果（I14）。
+     */
+    private static ToolSource inferSource(String toolName) {
+        return toolName != null && toolName.startsWith(ToolPolicyEngine.MCP_PREFIX)
+                ? ToolSource.MCP : ToolSource.LOCAL;
+    }
+
+    /**
+     * 审批被拒时的原因。
+     *
+     * <p>{@link Approval#rejected} 的 {@code reason} 可以是 null，而
+     * {@link ToolAuditEvent} 要求 DENIED 必须带原因（被拦下却不说原因，
+     * 这一行就没法用于排查）。所以这里补一个不含推测的事实描述，
+     * 而不是让审计写入在运行时炸掉。
+     */
+    private static String approvalReason(Approval approval) {
+        if (approval.reason() != null && !approval.reason().isBlank()) {
+            return approval.reason();
+        }
+        return approval.expired() ? "approval timed out"
+                : "approval rejected by " + String.valueOf(approval.approver());
+    }
+
+    private static Integer elapsedMs(long startedAtNanos) {
+        long ms = (System.nanoTime() - startedAtNanos) / 1_000_000L;
+        return (int) Math.max(0L, Math.min(ms, Integer.MAX_VALUE));
     }
 
     private String key(String toolName, String args) {
@@ -258,12 +356,13 @@ public class GuardedToolCallback implements ToolCallback {
                                                ToolPolicyEngine policyEngine,
                                                KillSwitch killSwitch,
                                                ToolAuditLog auditLog,
+                                               ToolAuditContext auditContext,
                                                IdempotencyStore idempotencyStore,
                                                ToolExecutionLedger ledger,
                                                String runId,
                                                int step) {
         return new GuardedToolCallback(delegate, policyEngine, killSwitch,
-                (k, p, a) -> Approval.granted("auto"), auditLog, idempotencyStore,
+                (k, p, a) -> Approval.granted("auto"), auditLog, auditContext, idempotencyStore,
                 ledger, ArgClamper.NOOP, runId, step);
     }
 
