@@ -102,7 +102,7 @@ CI 只覆盖到 `oncall-domain` + `oncall-config` + `oncall-tool-gateway` 三个
 |------|------|
 | `MessageChatMemoryAdvisor` 构造方式（`架构设计方案.md` §3.2） | 仅有文档，1.x 有构造器与 builder 两种写法，写代码时二选一 |
 | `CitationVerifier` / `RerankPostProcessor` / `HybridRetriever` / `UsageTrackingAdvisor` | 仅在 `质量与可靠性设计.md` 中设计，未落地 |
-| M1 剩余：`JsonScaleArgsAdapter`、`WecomApprovalGate`、`AutonomyLevel` 接入调用链 | 未落地（`JdbcToolAuditLog` 已于 §1.15 落地，`canonical()` 规范化已于 §1.16 落地，`approval_record` 持久化已于 §1.17 落地） |
+| M1 剩余：`WecomApprovalGate`、`AutonomyLevel` 接入调用链 | 未落地（`JdbcToolAuditLog` §1.15、`canonical()` 规范化 §1.16、`approval_record` 持久化 §1.17、`traceId` 产出方 §1.18、`JsonScaleArgsAdapter` §1.19 均已落地） |
 
 
 ---
@@ -1591,7 +1591,7 @@ return json.replaceAll("\\s+", "");
 
 轨迹：`280/20/75` → `304/22/78` → `323/23/82` → `365/25/91` → `371/26/91` →
 `398/27/99` → `427/29/102` → `460/31/107` → `487/32/111` → `503/33/114` →
-`523/35/121` → `556/38/126` → `573/39/127` → `616/42/133` → **`640/44/134`**。
+`523/35/121` → `556/38/126` → `573/39/127` → `616/42/133` → `640/44/134` → **`659/45/135`**。
 
 ### 1.17 轨道 C3：审批记录第一次真正被写入
 
@@ -1851,6 +1851,98 @@ both method of(java.lang.String) and method of(com.oncall.domain.trace.TraceId) 
 
 失败 0、错误 0、跳过 0。**推送两次**：`906dd34` 编译不过（重载歧义）→ `af73aeb` 绿。
 
+### 1.19 轨道 C5：一道从未接上的防线
+
+#### 起点
+
+```
+grep -rn "implements ArgClamper" oncall-*/src/main   →  0 命中
+```
+
+`ScaleReplicasClamper` 的 javadoc 自称「防提示注入后果的确定性防线」，
+写着三条硬约束（不超 `current + maxDelta`、不低于 `minReplicas`、查不到就拒绝）。
+但它**刻意不解析 JSON**，只接受一个 `ScaleRequest`；
+而网关传给 `ArgClamper` 的是模型生成的原始 JSON 字符串。
+
+两侧对不上，于是 `GuardedToolCallback:103` 与 `McpToolRegistrar:132` 拿到的
+一律是 `ArgClamper.NOOP`。
+
+> **也就是说：「注入让模型生成 `replicas:0` 会被夹住」这句话，此前是假的。**
+> 它会原样执行——而缩到 0 等于下线服务。
+
+这与 C3 的 `ApprovalGate`（0 实现）、C4 的 `traceId`（0 产出方）是同一个缺陷类：
+**声明存在，实现缺席。这是第四个实例。**
+
+#### 三条不可退让的性质
+
+| 性质 | 不做的后果 |
+|------|-----------|
+| **解析失败必须抛，绝不原样放行** | 「看不懂就放过」等于给提示注入留了一个绕过整道防线的入口，**而注入恰好擅长让模型生成不该生成的东西**。`ArgClamper` 的契约写的就是「参数非法且无法夹紧时抛 `IllegalArgumentException`」 |
+| **没夹紧时必须返回原字符串对象** | `GuardedToolCallback:189` 判定夹紧用的是 `!args.equals(toolInput)`——**字符串比较**。解析再序列化会改掉空白与键序，于是每次调用都被记成 `CLAMPED`，审计表里全是假的夹紧记录。**一条永远为真的审计断言等于没有断言** |
+| **未知字段必须保留** | 模型可能带 `reason` 之类字段，丢掉它们等于篡改这次调用的记录。所以夹紧时是**改树**而不是重建对象 |
+
+第二条的测试用 `isSameAs` 而不是 `isEqualTo`——要的就是同一个对象。
+
+#### 一个查证后才敢写的决定
+
+我先写了「合法 JSON 后面跟垃圾必须被拒」的断言，
+随即意识到自己**不确定 Jackson 的默认行为**，于是去查证而不是靠猜：
+
+> `readTree` 默认只读到第一个完整 JSON 值就停，
+> **`FAIL_ON_TRAILING_TOKENS` 默认关闭**。
+
+所以那条断言本来会红。修法是**让代码符合安全意图，而不是弱化断言**——
+显式 `enable` 该特性。理由写进了类注释：
+
+> 夹紧器是安全边界，**边界上的「没看懂」必须失败，不能默认放过**。
+> 一段合法 JSON 后面跟着别的东西，要么是上游拼接出了 bug，
+> 要么是有人在试着夹带内容，两种都不该被安静地接受。
+
+这是本项目第一次「先查证 API 默认行为、再写断言」而**一次推绿**的轮次
+（前四轮 C1–C4 都至少红过一次）。
+
+#### 刻意不做的事：这里不记审计
+
+`ArgClamper` 的 javadoc 说「实现应在发生夹紧时记录审计」，但本类**不记**——
+`GuardedToolCallback` 已经在比较前后字符串后记了 `ToolAuditEvent.clamped(...)`。
+再记一次就有两条审计行描述同一次夹紧，而两份记录迟早不一致。
+
+更根本的是本类**拿不到** `ToolAuditContext`（`clamp` 签名里没有它），
+而审计行的 `trace_id` 是 NOT NULL。硬记只能塞假值，那就是 C1 拒绝过的事。
+
+#### 测试（19 条）
+
+- **6 条数值断言先用 Python 复算过夹紧算术**，逐条一致（7 / 2 / 2 / 7 / 7 / 6）
+- **5 条 `isSameAs(raw)`** 守未夹紧路径
+- 其余覆盖畸形 JSON 的 6 种形态、`service`/`replicas` 的缺失与类型错误、
+  `replicas:0` 与负数夹到下限、`8.0` 接受而 `8.5` 与 `"8"` 拒绝、
+  查不到副本数时**抛出而不吞掉**
+
+> 复算时我自己多加了一个用例（payment + `replicas=6`）报出不一致——
+> 那是**验证脚本里多余的用例**，测试文件中并无此断言。
+> 在此说明，避免把脚本的多余用例当成代码缺陷。
+
+#### 一条测量陷阱：这条 grep 现在自指了
+
+`grep -rn "implements ArgClamper" oncall-*/src/main` 现在返回 **2** 条，
+但**真正的类声明只有 1 条**——另一条是 `JsonScaleArgsAdapter` 自己的
+javadoc 里写着「`implements ArgClamper` 在 `src/main` 里命中 0」这句话。
+
+**当初用来证明「0 实现」的那条命令，如今会把自己的注释也数进去。**
+以后要数实现数，得排除注释，或者数 `class .* implements ArgClamper`。
+
+#### 本轮改动的数字（`9d47ad9`，run `34047357989` 已实测）
+
+| 指标 | `2b20228` 实测 | 预测 | **实测** |
+|------|---------------|------|---------|
+| 测试类 / 报告文件 | 44 | 45 | **45** ✅ |
+| 测试用例 | 640 | 659 | **659** ✅ |
+| 生产类合计 | 134 | 135 | **135** ✅ |
+| `ArgClamper` 的生产实现 | 0 | 1 | **1** ✅（grep 报 2，含自身 javadoc 1 条） |
+| DDL 表数 / 约束 | 19 / 4-4 | 19 / 4-4 | **19 / 4-4** ✅ |
+
+失败 0、错误 0、跳过 0。**推送一次即绿**——C1–C4 每轮都至少红过一次。
+
 ---
 
 ## 二、下一步：按模块推进（M1 → M7）
@@ -1874,7 +1966,7 @@ both method of(java.lang.String) and method of(com.oncall.domain.trace.TraceId) 
 
 | 待办 | 说明 |
 |------|------|
-| `JsonScaleArgsAdapter` | 把 `String` JSON 转成 `ScaleRequest`（需 Jackson），并实现 `ArgClamper` 接口 |
+| ~~`JsonScaleArgsAdapter`~~ | ✅ **已落地**（§1.19）。它补的不是「一个待办」，而是一道**从未接上的防线**：`implements ArgClamper` 此前在 `src/main` 里命中 0，网关拿到的一律是 `ArgClamper.NOOP`，所以「注入让模型生成 `replicas:0` 会被夹住」这句话此前是假的 |
 | ~~`JdbcToolAuditLog`~~ | ✅ **已落地**（§1.15）。原先的写法（"`idempotency_key` 加 UNIQUE，因为内存版在多实例下幂等会失效"）**已作废**：幂等已由 `tool_execution_claim`（V7）+ `JdbcToolExecutionLedger` 独立解决，审计表不该也不能承担它。它真正的安全含义是审计自身的持久性，而阻塞点是接口签名给不出表的必填列——已由 `ToolAuditContext` / `ToolAuditEvent` 解开 |
 | ~~规范化升级~~ | ✅ **已落地**（§1.16）。原先 `canonical()` 的 javadoc 写着「key 排序 + 去空白」而实现只去空白，导致键顺序不同的等价参数算出两个幂等键、幂等静默失效。现由 `JsonCanonicalizer` 承担 |
 | `WecomApprovalGate` | 企微卡片 + 超时升级 + 双人复核。**不要写 `expires_at`**——`approval_record` **没有这个列**（本表曾要求写它，那是错的，见 §1.17）。到期时刻由 `requested_at + ToolPolicy.approvalTimeout()` 算；把算出来的值存成列，会在策略改动后与事实不一致。通知渠道是<b>可替换的一层</b>：事实来源是数据库，企微只是催人的手段 |
