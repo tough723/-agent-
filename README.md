@@ -16,7 +16,7 @@
 | 分支 | `arena/01a06d8c-agent` |
 | CI | GitHub Actions，JDK 17 temurin + Maven 3.9.16 |
 | 测试 | **365 个用例 / 25 个测试类，全通过**（CI run `33986641697`） |
-| 已落地模块 | `oncall-domain`、`oncall-config`、`oncall-config-admin`、`oncall-tool-gateway`、`oncall-tool-admin`、`oncall-agent-core`、`oncall-ontology`、`oncall-archtest`（仅测试） |
+| 已落地模块 | `oncall-domain`、`oncall-config`、`oncall-config-admin`、`oncall-tool-gateway`、`oncall-tool-admin`、`oncall-agent-core`、`oncall-ontology`、`oncall-eval`、`oncall-archtest`（仅测试） |
 | 数据库 | 15 张表的 DDL 已写入 `db/migration/`，**全部在真实 PostgreSQL 16 + pgvector 上执行通过（含重复执行）** |
 | 阶段 | M1 完成，M1.5 完成，M2 起 |
 
@@ -135,9 +135,16 @@ oncall-agent (parent)
 ├── oncall-config          纯 Java，零依赖    配置治理与前端可配置化
 ├── oncall-config-admin    Spring Web         配置治理的 REST 接入层
 ├── oncall-tool-gateway    Spring AI          工具调用安全核心 ← 基石所在
+├── oncall-tool-admin      Spring Web         工具白名单治理的 REST 接入层
+├── oncall-agent-core      Spring AI          LLM failover / prompt 版本化 / 查询理解
 ├── oncall-ontology        纯 Java，零依赖    轻量本体：概念 / 关系 / 4 条规则
-└── oncall-archtest        仅测试，无生产代码  架构约束 F1–F4、F9
+├── oncall-eval            SnakeYAML          L3 评测：EXECUTE 召回率硬门槛
+└── oncall-archtest        仅测试，无生产代码  架构约束 F1–F4、F9–F12
 ```
+
+> 这棵树在 `oncall-tool-admin` 与 `oncall-agent-core` 落地后一度没有跟着更新，
+> 是在补 `oncall-eval` 时才发现的。**模块清单这类东西必须和 pom 一起改**，
+> 否则读文档的人会按一张少两个模块的图去理解依赖方向。
 
 依赖方向严格单向（已核实的边：`config-admin → config`、`tool-gateway → domain`、
 `ontology → domain`）。**`oncall-domain`、`oncall-config`、`oncall-ontology`

@@ -92,6 +92,8 @@ ls *.md                                            # 确认文档集完整
 | `oncall-agent-core/.../prompt/PromptRegistry.java` | prompt 的单一事实来源：版本不存在**绝不**回退 |
 | `oncall-agent-core/src/main/resources/prompts/` | prompt 正文，文件名 `<name>.<version>.md`，**不可原地修改** |
 | `oncall-agent-core/.../query/IntentClassifier.java` | 规则层定安全、LLM 只做路由。**改这里的正则等于改安全边界** |
+| `oncall-eval/src/main/resources/golden-set/` | 人工标注集。**动它等于动判据**，加用例可以，删用例要说明理由 |
+| `oncall-eval/.../ExecuteRecallGate.java` | `EXECUTE` 召回率硬门槛，CI 里唯一的质量门槛 |
 | `db/migration/V1__config_governance.sql` | 已落地的 2 张表 |
 | `.github/mvn-test.sh` | CI 失败诊断（annotation 通道） |
 | `.github/workflows/ci.yml` | 模块列表是**硬编码**的，加模块要改这里 |
