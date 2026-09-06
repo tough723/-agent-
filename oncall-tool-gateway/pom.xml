@@ -31,6 +31,18 @@
       <artifactId>spring-ai-model</artifactId>
     </dependency>
     <!--
+      JSON 规范化用：幂等键由参数的规范化形式算出，
+      而"规范化"必须是**确定**的——{"a":1,"b":2} 与 {"b":2,"a":1}
+      语义相同，若算出两个键，幂等就静默失效，
+      而幂等失效的后果是二次扩容、二次重启。
+      不自己写 JSON 解析器：解析器的 bug 会直接变成幂等键的 bug。
+      版本由 spring-boot-dependencies 托管，与 oncall-agent-core 一致。
+    -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+    <!--
       仅测试作用域：用于校验 oncall-config 里以字符串声明的枚举取值
       （autonomy.level / autonomy.kill-switch-mode）与真实枚举常量一致。
       oncall-config 刻意保持零依赖，所以这条一致性只能从这边守。

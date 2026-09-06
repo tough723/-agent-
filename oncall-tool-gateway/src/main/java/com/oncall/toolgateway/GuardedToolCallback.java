@@ -323,15 +323,30 @@ public class GuardedToolCallback implements ToolCallback {
     }
 
     /**
-     * 参数规范化：JSON key 排序 + 去空白。
-     * 不做规范化会导致同语义不同字面量产生不同幂等键，幂等失效。
-     * 这里给出最小实现；生产建议用 Jackson 读成 TreeMap 再序列化。
+     * 参数规范化 —— 幂等键的输入。
+     *
+     * <p><b>这里原先是个 bug。</b>旧实现的 javadoc 写着「JSON key 排序 + 去空白」，
+     * 而代码只有 {@code json.replaceAll("\\s+", "")}——<b>根本没有排序</b>。
+     * 于是 {@code {"a":1,"b":2}} 与 {@code {"b":2,"a":1}} 算出两个不同的幂等键，
+     * 语义完全相同的两次请求被判成两次不同的操作，<b>幂等静默失效</b>，
+     * 而幂等失效的后果是二次扩容、二次重启。
+     *
+     * <p>实现移到 {@link JsonCanonicalizer}（键排序 + 数组保序 + 数字归一）。
+     *
+     * <p><b>非法 JSON 的处理是刻意的</b>：退回「去空白」而不是抛异常。
+     * 抛出去会让一次参数写坏的工具调用变成网关故障；而退回至少保证
+     * 「字面量相同 ⇒ 键相同」。代价是「语义相同但字面量不同」的非法 JSON
+     * 仍会得到两个键——但那已经无法比较语义了，是这个问题能达到的上界。
      */
     static String canonical(String json) {
         if (json == null) {
             return "";
         }
-        return json.replaceAll("\\s+", "");
+        try {
+            return JsonCanonicalizer.canonicalize(json);
+        } catch (IllegalArgumentException e) {
+            return json.replaceAll("\\s+", "");
+        }
     }
 
     private String denialPayload(String toolName, Approval approval) {

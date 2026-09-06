@@ -231,6 +231,66 @@ class GuardedToolCallbackTest {
     }
 
     @Test
+    @DisplayName("★ ④ 键顺序不同也算同一次调用——这条曾经是真的会二次执行")
+    void keyOrderDoesNotBreakIdempotency() {
+        // 【这是一条回归断言，不是一个新特性】
+        // canonical() 的 javadoc 一直写着「JSON key 排序 + 去空白」，
+        // 而实现只有 replaceAll("\\s+", "")——**根本没有排序**。
+        // 于是这两个字面量算出两个幂等键，语义相同的两次请求被判成两次操作，
+        // 而幂等失效的后果正是二次扩容、二次重启。
+        // 旧实现下这条断言会失败（tool.calls == 2）。
+        RecordingTool tool = RecordingTool.ok(TOOL, "scaled-to-3");
+        GuardedToolCallback guarded = guard(tool, ArgClamper.NOOP, autoApprove());
+
+        guarded.call("{\"service\":\"order\",\"replicas\":3}");
+        guarded.call("{\"replicas\":3,\"service\":\"order\"}");
+
+        assertThat(tool.calls).as("键顺序不同不能导致二次扩容").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("④ 数字写法不同也算同一次调用：8 与 8.0 是同一个扩容请求")
+    void numberNotationDoesNotBreakIdempotency() {
+        // 模型重试时完全可能把 8 写成 8.0，那是同一个请求。
+        RecordingTool tool = RecordingTool.ok(TOOL, "scaled-to-8");
+        GuardedToolCallback guarded = guard(tool, ArgClamper.NOOP, autoApprove());
+
+        guarded.call("{\"replicas\":8}");
+        guarded.call("{\"replicas\":8.0}");
+
+        assertThat(tool.calls).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("④ 嵌套对象的键顺序也归一，但数组顺序不能归一——数组顺序是有语义的")
+    void nestedKeysAreCanonicalizedButArrayOrderIsNot() {
+        RecordingTool tool = RecordingTool.ok(TOOL, "ok");
+        GuardedToolCallback guarded = guard(tool, ArgClamper.NOOP, autoApprove());
+
+        guarded.call("{\"scale\":{\"max\":10,\"min\":1},\"replicas\":8}");
+        guarded.call("{\"replicas\":8,\"scale\":{\"min\":1,\"max\":10}}");
+        assertThat(tool.calls).as("嵌套键顺序不同仍是同一次调用").isEqualTo(1);
+
+        // 反过来：[1,2] 与 [2,1] 是不同的参数，绝不能被幂等吞掉
+        guarded.call("{\"targets\":[\"a\",\"b\"]}");
+        guarded.call("{\"targets\":[\"b\",\"a\"]}");
+        assertThat(tool.calls).as("数组顺序不同是不同操作，必须各执行一次").isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("④ 非法 JSON 不能让网关炸掉：退回字面量比较，至少保证确定性")
+    void malformedArgsDoNotBreakTheGateway() {
+        RecordingTool tool = RecordingTool.ok(TOOL, "ok");
+        GuardedToolCallback guarded = guard(tool, ArgClamper.NOOP, autoApprove());
+
+        assertThat(guarded.call("{not json")).isEqualTo("ok");
+        // 同一个非法字面量重复调用仍然幂等：退回「去空白」后，
+        // 字面量相同 ⇒ 键相同，所以第二次是重放而不是再执行一次。
+        assertThat(guarded.call("{not json")).isEqualTo("ok");
+        assertThat(tool.calls).as("非法 JSON 也要能重放，否则重试就真的再执行一遍").isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("④ 不同步序号视为不同调用，不会被幂等误吞")
     void differentStepIsNotSwallowed() {
         RecordingTool tool = RecordingTool.ok(TOOL, "ok");
