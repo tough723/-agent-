@@ -226,7 +226,7 @@ public class GuardedToolCallback implements ToolCallback {
         try {
             // ⑤ 审批闸门（带超时；超时 = 升级，不是卡死）
             if (policy.requiresApproval()) {
-                Approval approval = approvalGate.await(key, policy, args, context);
+                Approval approval = approvalGate.await(key, policy, args, auditContext);
                 if (!approval.approved()) {
                     // 批准的审批不单独成行：审批本身（谁申请、谁批、何时）属于
                     // approval_record，那里才是责任归属的凭据；在审计流水里再记一条
@@ -377,7 +377,7 @@ public class GuardedToolCallback implements ToolCallback {
                                                String runId,
                                                int step) {
         return new GuardedToolCallback(delegate, policyEngine, killSwitch,
-                (k, p, a) -> Approval.granted("auto"), auditLog, auditContext, idempotencyStore,
+                (k, p, a, ctx) -> Approval.granted("auto"), auditLog, auditContext, idempotencyStore,
                 ledger, ArgClamper.NOOP, runId, step);
     }
 

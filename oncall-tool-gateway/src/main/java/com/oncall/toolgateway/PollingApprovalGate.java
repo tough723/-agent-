@@ -39,6 +39,9 @@ public final class PollingApprovalGate implements ApprovalGate {
 
     private static final String TIMEOUT_COMMENT = "approval timed out";
 
+    /** 策略没给 approvalTimeout 时的兜底上界。 */
+    public static final Duration DEFAULT_APPROVAL_TIMEOUT = Duration.ofMinutes(10);
+
     private final ApprovalRecordStore store;
     private final Duration pollInterval;
     private final Clock clock;
@@ -132,6 +135,21 @@ public final class PollingApprovalGate implements ApprovalGate {
     static String recordId(String idempotencyKey) {
         return Sha256IdempotencyStore.sha256("approval|" + (idempotencyKey == null
                 ? UUID.randomUUID().toString() : idempotencyKey));
+    }
+
+    /**
+     * 审批等待上界。
+     *
+     * <p>策略没给超时时用兜底值而不是无限等——无限等就是本类要消灭的那个 bug
+     * （原方案全文检索「超时」命中 0 次，而审批人不在线时
+     * {@code PENDING_APPROVAL} 会永久卡死，告警还在烧）。
+     */
+    private static Duration timeoutOf(ToolPolicy policy) {
+        Duration t = policy.approvalTimeout();
+        if (t == null || t.isZero() || t.isNegative()) {
+            return DEFAULT_APPROVAL_TIMEOUT;
+        }
+        return t;
     }
 
     private static Approval toApproval(ApprovalRecord r) {
