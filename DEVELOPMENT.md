@@ -1591,7 +1591,7 @@ return json.replaceAll("\\s+", "");
 
 轨迹：`280/20/75` → `304/22/78` → `323/23/82` → `365/25/91` → `371/26/91` →
 `398/27/99` → `427/29/102` → `460/31/107` → `487/32/111` → `503/33/114` →
-`523/35/121` → `556/38/126` → `573/39/127` → `616/42/133` → `640/44/134` → `659/45/135` → `666/45/135` → `677/45/136` → `683/45/136` → **`687/45/136`**。
+`523/35/121` → `556/38/126` → `573/39/127` → `616/42/133` → `640/44/134` → `659/45/135` → `666/45/135` → `677/45/136` → `683/45/136` → `687/45/136` → **`695/46/137`**。
 
 ### 1.17 轨道 C3：审批记录第一次真正被写入
 
@@ -2525,4 +2525,112 @@ grep JsonScaleArgsAdapter / ScaleReplicasClamper 在 src/main（排除 clamp 包
 第二行是诚实的结论：D1 让「忘了接」从静默失效变成启动崩溃，
 但**真正把它接上需要装配层**——那需要一个能构造这些对象的地方，
 而全仓此刻 0 个 `@Configuration` / `@Bean` / `@SpringBootApplication` / `main`。
+
+---
+
+### 1.24 轨道 D2-a：新建装配层，把 C5 的夹紧链真正 new 出来
+
+#### 为什么必须是一个新模块
+
+装配的职责是「把各层 new 出来并接上」，它天然要同时依赖
+tool-gateway / agent-core / ontology / config。**塞进任何一个下层模块都会当场造环：**
+
+| 若放进 | 违规 |
+|--------|------|
+| `oncall-tool-gateway` | 网关反向依赖编排层 |
+| `oncall-agent-core` | **F11** 禁止 `agent.llm` / `agent.prompt` 依赖 `toolgateway` |
+| `oncall-config` | **F3** 禁止 `com.oncall.config..` 依赖 `com.oncall.toolgateway..` |
+
+只有站在依赖图最顶端的新模块能同时引这些而不违规。
+
+#### 它补的是哪个洞
+
+轨道 D1 量出 `JsonScaleArgsAdapter` 的生产引用数 = **0**：
+C5 建好的那道夹紧防线一行都没接上。缺的不是实现，是**有一个地方负责 new 它**。
+
+`ToolGatewayAssembly.scaleReplicasClamper(replicaState, limits)` 就是这个位置。
+它同时挡掉一个装配陷阱：`ScaleReplicasClamper` 自称「确定性防线」，
+但它接受 `ScaleRequest` 而不是模型生成的 JSON —— 真正的形状是**两层**：
+
+```
+模型生成的 JSON ──> JsonScaleArgsAdapter ──> ScaleReplicasClamper ──> 夹紧后的 JSON
+                    （解析 + 改树）          （纯算术 + 拒绝）
+```
+
+#### 刻意不做的部分
+
+**不构造 `GuardedToolCallback`。** 那需要一个 `ApprovalGate`，
+而它的生产实现数此刻是 **0**（M1 剩余项 `WecomApprovalGate`）。
+现在硬造一个假实现来「把装配做完」，只会得到一个只有测试用的接缝——
+那正是轨道 C3 批评过的东西。**宁可这一步只做能做完的部分。**
+
+#### 三处接线（漏任何一处，新模块都会被静默跳过）
+
+| # | 位置 | 漏了的后果 |
+|---|------|-----------|
+| ① | 父 pom `<modules>`，插在 `oncall-archtest` **之前** | 模块不参与 reactor 构建 |
+| ② | `ci.yml` 新增 `Build & test oncall-app`，同样排在 archtest 之前 | **CI 显式枚举模块，漏了不会报错，只会静默不测** |
+| ③ | `oncall-archtest/pom.xml` 显式依赖 `oncall-app` | `ClassFileImporter` 只扫编译期可见的字节码 ⇒ `importPackages("com.oncall.app")` 扫到**零个类**，而所有 `noClasses()` 规则在空集合上都是**真** ⇒ 规则空转通过 |
+
+配套：`PRODUCTION_PACKAGES` 加 `com.oncall.app`；
+`f9IsNotVacuouslyTrue` 里加一条断言，钉住「装配层确实被扫到」。
+
+#### 逐条核对过的 ArchUnit 影响
+
+| 规则 | 范围 | 是否受影响 |
+|------|------|-----------|
+| F9 | `ToolCallback` 的实现类 | 否——装配类不实现它 |
+| F12 | `com.oncall.eval..` | 否——装配类不依赖 eval |
+| F1 / F2 / F3 / F4 / F10 / F11 | domain / config / toolgateway / agent.llm 等 | 否——包范围都不含 `com.oncall.app` |
+
+#### 一个已知风险，本轮核实它已被挡掉
+
+**surefire 2.12.4 会对 JUnit 5 跑 0 个测试却报绿**（本项目踩过）。
+新模块如果没继承到正确配置就会重演。核实方式：
+
+```
+8 个现有模块的 pom 全部不声明 <build> 段（实测各为 0）
+⇒ 都靠父 pom pluginManagement 里的 surefire 3.2.5 继承
+⇒ oncall-app 同样继承，风险不存在
+```
+
+真正的验证钩子是 CI 那条统计：**报告文件 45 → 46、测试总数 687 → 695**，
+与 `ToolGatewayAssemblyTest` 的 8 条精确对上。若测试没跑，这两个数不会动。
+
+#### 测试（8 条，报告文件 45 → 46）
+
+断言的**不是**夹紧算术（那在 `ScaleReplicasClamperTest` 里已逐条钉住），
+而是**「链被正确接上了」**——这件事在 D1 之前没有任何测试覆盖：
+
+| 断言 | 值 |
+|------|-----|
+| ★ 上限生效 | `replicas:999` → **7**（`current=4 + maxDelta=3`） |
+| ★ 下限生效 | `replicas:0` → **2**（`minReplicas`）——C5 要挡的正是这个后果 |
+| 合法区间 | 返回**原字符串对象**（`isSameAs`，不是 `isEqualTo`） |
+| 其它 | 未知字段保留 / 非扩容工具原样放过 / 畸形 JSON 拒绝 / null 立即失败 / 查不到副本数时拒绝 |
+
+夹紧算术先在 `python3` 里算过（`999→7`、`0→2`、`5→5`）才写进断言，没有靠记忆。
+
+#### 落地当轮就量了目标是否达成
+
+按 D1 记下的纪律「上一轮建好的东西，下一轮要先量它有没有被构造」，
+这次**当轮**就量：
+
+```
+ToolGatewayAssembly.java:66   return new JsonScaleArgsAdapter(replicaState, limits);
+```
+
+**`JsonScaleArgsAdapter` 的生产构造点：0 → 1。**
+（其余 5 个命中是 1 个 import、3 处 javadoc、1 处 `GuardedToolCallback` 的注释。）
+
+#### CI 核对
+
+`aa586e5` · run `34052593991` · **success**
+报告文件 **46** · 测试总数 **695** · 失败 0 · 错误 0
+`DDL-表数 19` · `DDL-约束 4/4`
+生产类 **137**（新增 `ToolGatewayAssembly`）
+
+**连续第六个一次绿的推送（C5 / C6 / C7 / C8 / D1 / D2-a）。**
+这是其中风险最高的一轮（新模块 + `ci.yml` + ArchUnit 扫描范围三处联动），
+也是一次过的。
 
