@@ -51,7 +51,15 @@ import java.util.List;
  */
 public final class JsonCanonicalizer {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    /**
+     * 唯一的 {@code ObjectMapper}（线程安全，可共享）。
+     *
+     * <p>{@code WRITE_BIGDECIMAL_AS_PLAIN} 让 BigDecimal 一律写成十进制而不是
+     * 科学计数法：幂等键要能被人读出来对账，{@code 1E+6} 与 {@code 1000000}
+     * 是同一个数却会算出两个键。
+     */
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .configure(com.fasterxml.jackson.core.JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN, true);
 
     private JsonCanonicalizer() {
     }
@@ -143,8 +151,14 @@ public final class JsonCanonicalizer {
             return node;    // 解析不了的数字（NaN 之类）原样保留，不猜
         }
         BigDecimal stripped = value.stripTrailingZeros();
-        // stripTrailingZeros 会把 100 变成 1E+2，toPlainString 再拉回 100。
+        // stripTrailingZeros 会把 1000000 变成 1E+6，toPlainString 再拉回 1000000。
         // 少了这一步，同一个整数会因为写法不同而得到两个键。
-        return MAPPER.getNodeFactory().numberNode(stripped.toPlainString());
+        //
+        // 【为什么再 new 一次 BigDecimal】JsonNodeFactory 没有 numberNode(String)，
+        // 而直接传 stripped 进去的话，Jackson 序列化 BigDecimal 用的是 toString()，
+        // 1E+6 就会原样写进幂等键。从 plain 字符串重新构造，
+        // 得到的 BigDecimal 的 toString() 就是 plain 形式。
+        // 另外 MAPPER 上打开了 WRITE_BIGDECIMAL_AS_PLAIN 作为双保险。
+        return MAPPER.getNodeFactory().numberNode(new BigDecimal(stripped.toPlainString()));
     }
 }
