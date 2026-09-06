@@ -71,7 +71,7 @@ ls *.md                                            # 确认文档集完整
   但同一个重试在延迟上是 +8s，直接击穿 P95。**换个维度结论就翻转**，
   这类地方最容易漏。
 - **发现自己之前的结论错了要明说**，不要悄悄改掉。
-  这个项目里已经修正过：「36 项参数」实际是 39 项（现为 41 项）；
+  这个项目里已经修正过：「36 项参数」实际是 39 项（现为 43 项）；
   「四重预算」实际是三重；`#5903` 不是 reranker 的活 issue，`#6524` 才是。
 - **不要用"用了 23 种设计模式"这种说法。** 说 5 种组合。
 - **不要说"引用幻觉率 = 0"**，要说"**文档级**引用幻觉率 = 0"。
@@ -82,8 +82,10 @@ ls *.md                                            # 确认文档集完整
 
 | 文件 | 作用 |
 |------|------|
-| `oncall-tool-gateway/.../GuardedToolCallback.java` | **基石**：七道关卡 |
-| `oncall-config/.../OnCallConfigRegistry.java` | 41 项配置的唯一声明处 |
+| `oncall-tool-gateway/.../GuardedToolCallback.java` | **基石**：七道关卡。**审计必须覆盖每一个出口**——三条拒绝路径曾因审计调用点全写在「放行之后」而一条都没记 |
+| `oncall-tool-gateway/.../ToolAuditEvent.java` | 一条审计事件 = `tool_audit_log` 的一行。7 个 `NOT NULL` 列全是 record 组件，**构造期就校验**，少一个就构造不出对象 |
+| `oncall-tool-gateway/.../ArgMasker.java` | `args_masked` 的唯一来源。三条性质：绝不抛异常（含 `StackOverflowError`）、宁可多遮、不保留原值长度。**改正则前先读类注释里那两个已知 bug 的成因** |
+| `oncall-config/.../OnCallConfigRegistry.java` | 43 项配置的唯一声明处 |
 | `oncall-config-admin/.../ConfigAdminController.java` | 配置 REST + 双人复核 |
 | `oncall-tool-admin/.../ToolPolicyAdminController.java` | 工具白名单 REST + 双人复核 |
 | `oncall-tool-gateway/.../ToolPolicyGovernance.java` | **唯一**有权改白名单的生产类 |

@@ -138,7 +138,7 @@
 
 | 错误 | 实际 |
 |------|------|
-| 文档写"36 项参数 / RUNTIME_HOT 20 项" | **39 项 / 23 热改** / 8 迁移 / 8 后端专属（新增 mcp 组后为 **41 项 / 24 热改 / 9 后端专属**）。少数了 2 项，很久没人发现。现在 `tierDistribution` 用精确断言拦 |
+| 文档写"36 项参数 / RUNTIME_HOT 20 项" | **39 项 / 23 热改** / 8 迁移 / 8 后端专属（新增 mcp 组后为 41 项 / 24 热改 / 9 后端专属；B3 加两个 query 键后为 **43 项 / 26 热改 / 9 后端专属**）。少数了 2 项，很久没人发现。现在 `tierDistribution` 用精确断言拦 |
 | 文档写"F3.2 四重预算" | 实际是**三重**（步数 / token / 成本） |
 | 说"没有内置 reranker（issue #5903）" | **#5903 已被关为重复**，活 issue 是 **#6524** |
 | 说"引用幻觉率 = 0" | 应为"**文档级**引用幻觉率 = 0"，`CitationVerifier` 只到 `doc_id` 粒度 |
@@ -172,6 +172,12 @@
 | **让仪器和样本共用一个分母** | 探针组存在的唯一目的是量过度命中。同一个现象（规则层过度命中）如果同时进「召回率」和「准确率」两个分母，就是用两个激励相反的指标各记一次：召回率要正则宽，准确率要正则窄，于是无论怎么调都必然有一项不达标，而那两项说的是同一件事。`IntentJudge` 因此把探针组从准确率与拒答率的分母里排除，只留在 `overHitRate` 里 |
 | **以为「模型全对」就等于「准确率为 1.0」** | 让模型对全部 60 条都答对，准确率仍不是 1.0：`INT-044`（标注 `CONFIGURE`）依然错，因为规则层的「关掉」把它强制成 `EXECUTE`，模型无法推翻。**混合分类器的准确率是系统指标，不是模型指标**——它含规则层的账，所以换模型不一定让它变好，调正则才会。把两个用例的召回率按「规则侧/模型侧」拆开报，就是为了不让这个合成数把「正则全对、模型全错」藏起来 |
 | **`IntentGoldenSet` 用 `Map.copyOf` 装用例，javadoc 却承诺「按文件里的顺序」** | CI 第一次红就红在这里：`misclassified` 反序返回。`Map.copyOf` 的迭代顺序不保证，所以那两个承诺（`cases()` 与 `groups()`）一直是假的。这是本项目**第三次**踩 `Map`/`Set.copyOf` 丢顺序（前两次在 `PromptRegistry`）。已改成 `unmodifiableMap(new LinkedHashMap<>(...))` + 一条钉住顺序的用例 + 一道机械预检（`Map`/`Set.copyOf` 出现处若上文承诺了顺序就报出来）。**教训不是「记住这一条」——同一类错犯了三次，说明要的是检查，不是记忆** |
+| **审计调用点全写在「放行之后」，于是三条拒绝路径一条都没记** | ① 未注册工具被默认拒绝、② kill switch 拦下、④ 幂等抢占失败，三处都直接让异常穿出去，`tool_audit_log` 里没有任何痕迹。而 ① 是工具投毒的第一道防线、② 是只读模式下拦截写操作——**最该被记录的安全事件反而是唯一没被记录的**。这不是漏写某一处，而是审计调用的**位置**错了。**规则：审计要覆盖每一个出口，尤其是拒绝出口——把审计写在 throw 之前，而不是只写在成功分支里** |
+| **列名叫 `args_masked`，存的是未脱敏原文** | 列名说谎是审计里最难发现的一类问题：读代码的人看到 `args_masked` 就假定已经脱敏了，于是审计表可以放心给更多人查——而它其实是密钥的第二个副本，且保留 180 天。**规则：列名与字段名是一个断言，改语义时必须回头核对真正存进去的东西** |
+| **`catch (RuntimeException)` 让「绝不抛异常」的契约变成假话** | `java.util.regex` 对 `(a|b)*` 是每重复一次递归一层，一段一万六千字符的参数就 `StackOverflowError`——而它是 `Error` 不是 `RuntimeException`，所以根本没被接住，CI 上真的炸了。**规则：承诺「不抛异常」时要问抛出来的是不是 `Error`；正则里避免 `(a|b)*`，改用 unrolled 形式 `a*(ba*)*`** |
+| **往 Java 源码里手写字符串转义，连着两次都写错** | 第一次用 Python 逐行替换正则，在 Python 字符串里多套一层反斜杠，写进文件的 `\"` 变成 `\\"`，Java 直接编译不过；第二次改 unrolled 时又手写一遍转义，`count=0` 匹配失败。改成「先写目标正则本身 → `java_lit()` 生成字面量 → `unjava()` 反向解码断言还原」之后才稳。**规则：凡往源码里写字面量，一律程序化生成 + 反向解码校验** |
+| **我的机械预检抓不到 Java 语法错** | 未使用 import、CJK 断言字面量那套预检全是文本级的，编译错误只能到 CI 才炸（本地没有 javac）。本轮推了三次才绿，前两次都是这种错。**规则：能程序化验证的就程序化验证——正则可编译、字面量可往返、断言值能从源码解出来；别指望肉眼过一遍 Java 语法** |
+
 
 ---
 
@@ -221,7 +227,7 @@
 | **CMDB 的告警→服务映射** | 没有映射就无法自动定位影响面，也无法 @ 对人 | 确认 CMDB 是否有这个关系，覆盖率多少 |
 | **成本模型的真实聚合率** | 现在的 15% 是**假设值**，成本承诺全是空的 | W3 用真实数据修正 |
 | **工具白名单（`ToolPolicy`）没有变更治理路径**（🟡 进行中） | 白名单是整个安全模型的事实来源——加一条 MCP 工具策略就等于放行一个远端工具。但配置治理那套（可见性分级 / 双人复核 / 待复核单 / 审计）只覆盖 `OnCallConfigRegistry`，**不覆盖 `ToolPolicyEngine`**。现在加策略是改代码或改 DB，没有第二人复核，也没有"谁在什么时候放行了什么"的可查记录 | 把工具策略纳入与配置同等的治理：变更走待复核单 + 双人 + 审计。这一条的优先级高于任何新功能。**A1 已完成**：双人复核的决策核心（`TwoPersonReview` + `Operator`）已从 `oncall-config-admin` 下沉到 `oncall-domain`，两侧共用一份规则（§1.6）。**A2 已完成**：`ToolPolicyGovernance` 落地，工具策略变更走待复核单 + 双人 + 审计，判据是 `PolicyRiskDelta` 算出的风险方向（§1.7）。**A4 已完成**：`register()/revoke()` 降为包级可见，治理层成为唯一入口（§1.8）。**A3 也已完成**：`oncall-tool-admin` 提供 REST 接入点（8 类 / 25 用例），四种拒绝映射到 410/403/409/409 四个状态码（§1.9）。**轨道 A 全部收口**，实测 398 用例 / 27 报告文件 / 99 生产类 |
-| **`ToolAuditLog` 的方法签名喂不满 `tool_audit_log` 的必填列** | V2 的 `tool_audit_log` 要求 `trace_id` / `tool_source` / `risk_level` / `args_masked` / `gate_outcome` 全部 `NOT NULL`，而 `recordSuccess(idempotencyKey, toolName, args, result)` **一个都给不出**：没有 trace，分不清 LOCAL 与 MCP，没有风险级，`gate_outcome` 只能靠方法名反推（`recordClamped` 与 `recordApproval` 之间还分不清 `PASSED` / `CLAMPED`），`args` 还是未脱敏原文而列名叫 `args_masked`。⇒ **`JdbcToolAuditLog` 现在写不出来**；硬写只能往必填列塞假值，而一张字段造假的审计表比没有审计更糟 | 把审计上下文（trace / source / riskLevel / gateOutcome / 脱敏后的参数）作为显式参数传进来，而不是让实现去猜。会动到 `GuardedToolCallback` 全部审计调用点，属独立一轮 |
+| ~~**`ToolAuditLog` 的方法签名喂不满 `tool_audit_log` 的必填列**~~ **✅ 已解决（轨道 C1，DEVELOPMENT §1.15）** | V2 的 `tool_audit_log` 要求 `trace_id` / `tool_source` / `risk_level` / `args_masked` / `gate_outcome` 全部 `NOT NULL`，而 `recordSuccess(idempotencyKey, toolName, args, result)` **一个都给不出**：没有 trace，分不清 LOCAL 与 MCP，没有风险级，`gate_outcome` 只能靠方法名反推（`recordClamped` 与 `recordApproval` 之间还分不清 `PASSED` / `CLAMPED`），`args` 还是未脱敏原文而列名叫 `args_masked`。⇒ **`JdbcToolAuditLog` 现在写不出来**；硬写只能往必填列塞假值，而一张字段造假的审计表比没有审计更糟 | 已按这个方向做完：`ToolAuditContext` + `ToolAuditEvent` 把上下文显式传入，7 个必填列全变成 record 组件并在构造期校验。**解决过程中查出两条此前没记的事**：① `traceId` 在生产代码里零命中，不只是「签名没传」；② **三条拒绝路径完全没有审计**（① 默认拒绝、② kill switch、④ 幂等抢占失败）——因为所有审计调用点都写在「放行之后」。**遗留**：`approval_record` 仍无 JDBC 实现；`traceId` 有了入口但还没有真正的产出方（等 M3 编排层） |
 
 > 第四条是这么被发现的：我本来加了一个 `mcp.allowed-servers` 配置项并把它放进
 > 高危清单，以为这样就"加 server 要两人同意"了。但那管的是**连接**，
@@ -236,9 +242,9 @@
 
 > **M1 的安全部分已完成，但不等于 M1 全部完成。**
 > I14（MCP 显式纳管）与 I8（幂等的物理保证）都已堵上。
-> 剩余 5 项是工程收尾：`JsonScaleArgsAdapter`、`JdbcToolAuditLog`、
+> 剩余 4 项是工程收尾：`JsonScaleArgsAdapter`、
 > `canonical()` 升级为 Jackson `TreeMap` 规范化、`WecomApprovalGate`、
-> `AutonomyLevel` 接入调用链。
+> `AutonomyLevel` 接入调用链（`JdbcToolAuditLog` 已于轨道 C1 落地）。
 >
 > **更正一处此前写错的话**：我曾说这 5 项里只有 `JdbcToolAuditLog` 带安全含义、
 > 理由是"内存版在多实例下幂等会失效"，并说它依赖 `uq_agent_step_idem`。
@@ -246,8 +252,9 @@
 > `JdbcToolExecutionLedger` 独立解决，与审计表无关；而 `uq_agent_step_idem`
 > 的粒度是"步"，本来就管不到工具调用。
 > `JdbcToolAuditLog` 仍然带安全含义，但理由变成了**审计本身在多实例下的持久性**
-> （内存版重启即丢，出事后无从追责），而且它现在**被 §9 第五项卡住**：
-> 接口签名给不出表的必填列，必须先改接口。
+> （内存版重启即丢，出事后无从追责）。它曾被 §9 第五项卡住，
+> **轨道 C1 已解开**（`ToolAuditContext` + `ToolAuditEvent` + `JdbcToolAuditLog`），
+> 并顺带补上了三条此前完全没有审计的拒绝路径。
 
 当前建议顺序分两条独立的轨道，可以并行：
 

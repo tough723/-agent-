@@ -102,7 +102,7 @@ CI 只覆盖到 `oncall-domain` + `oncall-config` + `oncall-tool-gateway` 三个
 |------|------|
 | `MessageChatMemoryAdvisor` 构造方式（`架构设计方案.md` §3.2） | 仅有文档，1.x 有构造器与 builder 两种写法，写代码时二选一 |
 | `CitationVerifier` / `RerankPostProcessor` / `HybridRetriever` / `UsageTrackingAdvisor` | 仅在 `质量与可靠性设计.md` 中设计，未落地 |
-| M1 剩余：`JsonScaleArgsAdapter`、`JdbcToolAuditLog`、`WecomApprovalGate`、`McpToolRegistrar`、`GuardedToolCallbackTest` | 未落地 |
+| M1 剩余：`JsonScaleArgsAdapter`、`WecomApprovalGate`、`AutonomyLevel` 接入调用链 | 未落地（`JdbcToolAuditLog` 已于 §1.15 落地） |
 
 
 ---
@@ -160,7 +160,7 @@ oncall-agent/
 │       ├── ConfigChange.java            变更审计记录
 │       ├── ConfigAuditLog.java          审计端口 + InMemory 实现
 │       ├── OnCallConfigKeys.java        39 个配置键常量
-│       ├── OnCallConfigRegistry.java    41 项参数声明（24 热改 / 8 迁移 / 9 后端专属）
+│       ├── OnCallConfigRegistry.java    43 项参数声明（26 热改 / 8 迁移 / 9 后端专属）
 │       ├── schema/ConfigSchemaExporter.java  前端 JSON schema 导出（手写，零依赖）
 │       └── store/
 │           ├── JdbcConfigStore.java     配置覆盖值持久化（墓碑行 + 方言无关 upsert）
@@ -388,7 +388,7 @@ JDBC 版靠主键冲突。应用层的 `SELECT` 再 `INSERT` 之间永远有窗�
 > 后两条只能靠「没有 error 所以通过了」反推。断言通过与否必须**看得见**，
 > 不能靠 absence 推断。现在输出 `DDL-约束 4/4 全部存在: ...` 一条。
 
-#### ⚠️ 本轮查出但**没有**顺手改的一件事
+#### ⚠️ 本轮查出但**没有**顺手改的一件事（**已于 §1.15 解决**）
 
 `tool_audit_log`（V2）要求 `trace_id` / `tool_source` / `risk_level` /
 `args_masked` / `gate_outcome` 全部 `NOT NULL`，而 `ToolAuditLog` 的方法签名是
@@ -406,6 +406,10 @@ void recordSuccess(String idempotencyKey, String toolName, String args, String r
 而一张字段造假的审计表比没有审计更糟（它让人相信查过了）。
 这条已记入 [DEVLONG.md](DEVLONG.md) §9，改接口会动到 `GuardedToolCallback`
 全部审计调用点，属于独立一轮的工作，本轮不夹带。
+
+> **✅ 轨道 C1 已解决，见 §1.15。** 而且解决过程中查出上面这段**还漏了两件更严重的事**：
+> `traceId` 在整个生产代码里**零命中**（不只是"签名没传"，是根本没有东西能产出它），
+> 以及**三条拒绝路径完全没有审计**。
 
 ### 1.6 双人复核决策核心下沉到领域层（轨道 A 第一步）
 
@@ -1351,6 +1355,147 @@ B5 之后，下列数字**依然一个都没有实测**，它们都需要「产�
 `398/27/99` → `427/29/102` → `460/31/107` → `487/32/111` → `503/33/114` →
 **`523/35/121`**。
 
+### 1.15 轨道 C1：`JdbcToolAuditLog` —— 审计上下文显式化与脱敏
+
+`DEVLONG.md` §9 记了三轮的那个阻塞解开了。5 个新生产类、3 个新测试类。
+
+#### 阻塞的真实形状（比文档记的更严重）
+
+`tool_audit_log` 有 7 个 `NOT NULL` 列，而旧的 5 个 `recordXxx` 方法一个都给不出：
+
+| NOT NULL 列 | 旧签名能否给出 |
+|------------|--------------|
+| `trace_id` | ❌ 生产代码里 `traceId` **零命中**——不是"签名没传"，是根本没有东西能产出它 |
+| `tool_source` | ❌ 分不清 LOCAL 与 MCP |
+| `risk_level` | ❌ 没有风险级 |
+| `gate_outcome` | ⚠️ 只能靠方法名反推，而 `recordClamped` 与 `recordApproval` 之间分不清 `PASSED` 与 `CLAMPED` |
+| `args_masked` | ❌ 传的是**未脱敏原文**，而列名说它已脱敏 |
+
+还有一条此前没记下：**旧签名每个方法的第一个参数都是 `idempotencyKey`，
+而 `tool_audit_log` 根本没有这一列**——旧接口唯一传得出来的东西，
+恰好是表里放不下的那个。
+
+当时的选择只有「往必填列塞假值」或「不写」，选了后者：
+一张字段造假的审计表比没有审计更糟，它让人以为查得到，
+而查出来的 trace 全是同一个占位串。
+
+#### ★ 顺带查出三条**完全没有审计**的拒绝路径
+
+这是本轮最值钱的发现，而它不在任何文档里：
+
+| 关卡 | 行为 | 原先有审计吗 |
+|------|------|------------|
+| ① `policyEngine.resolve()` | 未注册即抛 `ToolDeniedException` | ❌ **没有** |
+| ② `killSwitch.assertAllowed()` | 模式不允许即抛 | ❌ **没有** |
+| ④ `ledger.claim()` 失败 | 抛 `duplicate in-flight call` | ❌ **没有** |
+
+①是工具投毒的第一道防线，②是只读模式下拦截写操作——
+**最该被记录的安全事件反而是唯一没被记录的**。
+原因很朴素：所有审计调用点都写在「放行之后」。
+
+三条都已补上。未注册工具没有策略可读，来源按名字前缀推断
+（I14 不变量：`mcp:` 前缀 ⇔ `source()==MCP`，由 ArchUnit 守着），
+风险级记 `HIGH`——未知风险记高只会高估，
+而记低会让「被拒的高危调用」在按风险级的统计里彻底消失。
+
+#### 让「填不满」在构造期暴露，而不是在数据库里
+
+`ToolAuditEvent` 把 7 个必填列全变成 record 组件并在紧凑构造器里校验：
+少一个字段就构造不出对象，实现方再也没有猜的余地。
+另外两条一致性不变量：`DENIED`/`TIMED_OUT` 必须带原因
+（被拦下却不说原因，这一行没法用于排查），
+`PASSED`/`CLAMPED` 不许带原因（放行与拦下不能同时成立）。
+
+#### 脱敏：列名不能再说谎
+
+DDL 注释写着「不能成为敏感数据的第二个副本」，而这张表保留 180 天、
+查询频率最高、可见范围比业务库宽。三条不可退让的性质：
+
+1. **绝不抛异常**——脱敏在审计写入路径上，抛出去就等于这次调用没有审计；
+2. **宁可多遮不可少遮**；
+3. **不保留被遮值的长度**（长度本身就是信息）。
+
+用正则而不是 JSON 解析：模型生成的参数不保证是合法 JSON，
+而脱敏必须对残缺输入也生效。
+
+**写测试时复算抓出我自己两个 bug**：
+
+- 裸值分支太贪心，`{"conn":{"password":...}}` 里外层键的裸值会把整个内层对象吞掉，
+  **内层的敏感键根本轮不到被扫描**；
+- 残缺输入 `{"password":"hunter2`（没有闭合引号）整个值匹配不上，
+  **密钥原样进审计表**。
+
+误报同样守：`author` / `keyboard` / `sortKey` / `primaryKey` 必须原样保留，
+否则审计表全是 `***`，等于没有审计。所以分词后精确匹配而不是子串匹配，
+另加一层「抹掉分隔符后的复合词」兜住 `apikey` 这种全小写连写。
+
+#### 正则爆栈：一个把「绝不抛异常」变成假话的细节
+
+CI 第一轮红在 `StackOverflowError`。
+`java.util.regex` 对 `(a|b)*` 这类循环是**每重复一次递归一层**，
+一段一万六千字符的参数就把线程栈打穿了。
+
+连带暴露的后果更严重：`StackOverflowError` 是 `Error` 不是 `RuntimeException`，
+而脱敏只 `catch (RuntimeException)`——**所以「绝不抛异常」这条契约当时是假的**。
+
+两处都改了：正则换成 unrolled 形式 `[^"\\]*(?:\\\\.[^"\\]*)*`
+把递归深度从 O(n) 压到 O(转义个数)，并 `catch (RuntimeException | StackOverflowError)` 兜底。
+改写用「解码 → 替换 → 重编码」做的，不手写转义，
+并断言新旧正则在 12 组样本上的匹配结果**完全一致**。
+
+> 需要说明：我想用 Python 做对照组证明旧正则确实会溢出，
+> 但 Python 的 `re` 与 `java.util.regex` 栈行为不同，对照没复现，
+> **这个对照不成立**。真凭据是 CI 报的那条 `StackOverflowError` 本身。
+
+#### 两个刻意的取舍
+
+`gate_outcome` 闭集只有 DDL 注释那四个值：
+
+- **没有 `FAILED`**——工具自己抛异常不是关卡拦截，混进来
+  「被安全机制拦下的比例」就再也算不出来；
+- **没有 `APPROVED`**——审批有 `approval_record` 那张表，
+  同一个事实存两份迟早不一致。拒绝记 `DENIED`、超时记 `TIMED_OUT`。
+
+**重放（幂等命中）刻意不记审计**：工具这次没被执行，
+补 `PASSED` 会让人以为跑了两次，补 `DENIED` 会让人以为被安全机制拦了，
+两种都让「工具实际执行了几次」这个最关键的统计失真。
+
+#### 测试为什么从 V2 里抽建表语句
+
+`JdbcToolAuditLogTest` 不用类里的 `CREATE_TABLE_SQL` 常量建表，
+而是从 `db/migration/V2__agent_execution.sql` 里抽真实 DDL——
+否则被测的是一份 DDL 副本，生产上真正执行的 V2 没人验证，
+某个 `NOT NULL` 写漏了测试照样绿。
+其中一条断言反过来解析 V2 得到 7 个 `NOT NULL` 列名，
+逐个验证真的被填上且不是占位空串（`args_masked` 例外，见下）。
+
+#### 本轮改动的数字（`c620198`，run `34041982978` 已实测）
+
+| 指标 | `214b8a2` 实测 | 预测 | **实测** |
+|------|---------------|------|---------|
+| 测试类 / 报告文件 | 35 | 38 | **38** ✅ |
+| 测试用例 | 523 | 556 | **556** ✅ |
+| `oncall-tool-gateway` | 152 / 11 类 | 185 / 14 类 | **185 / 14** ✅ |
+| 生产类合计 | 121 | 126 | **126** ✅ |
+
+失败 0、错误 0、跳过 0。**推送三次才绿**：第一次编译不过（转义）、
+第二次红三条（爆栈 + 两条我自己写错的断言）、第三次全绿。
+
+#### 遗留
+
+- **`approval_record` 仍然没有 JDBC 实现**。审计流水现在能落库了，
+  但审批本身（谁申请、谁批、何时）还只在内存里——
+  而 DDL 注释说这张表「保留期永久，它是责任归属的唯一凭据」。
+- **`ArgMasker` 的敏感键表是固定的**。要按部署扩展就得走配置项，
+  而按本项目自己的教训「不要发布一个没人读的配置键」，
+  所以这一轮没做；真要收紧应当按工具的 `argsJsonSchema` 逐字段标注。
+- **`traceId` 现在由调用方传入，但还没有真正的产出方**。
+  编排层（M3）落地时要保证一次 `agent_run` 全程共用一个 trace。
+
+轨迹：`280/20/75` → `304/22/78` → `323/23/82` → `365/25/91` → `371/26/91` →
+`398/27/99` → `427/29/102` → `460/31/107` → `487/32/111` → `503/33/114` →
+`523/35/121` → **`556/38/126`**。
+
 ---
 
 ## 二、下一步：按模块推进（M1 → M7）
@@ -1375,7 +1520,7 @@ B5 之后，下列数字**依然一个都没有实测**，它们都需要「产�
 | 待办 | 说明 |
 |------|------|
 | `JsonScaleArgsAdapter` | 把 `String` JSON 转成 `ScaleRequest`（需 Jackson），并实现 `ArgClamper` 接口 |
-| `JdbcToolAuditLog` | 落 `tool_audit_log` 表。**原先的写法（"`idempotency_key` 加 UNIQUE，因为内存版在多实例下幂等会失效"）已作废**：幂等已由 `tool_execution_claim`（V7）+ `JdbcToolExecutionLedger` 独立解决，审计表不该也不能承担它（一次调用多条事件、且失败要能删行）。剩下的问题是审计自身的持久性——内存版重启即丢，出事后无从追责。**且当前被卡住**：接口签名给不出表的必填列，见 §1.5 末尾与 [DEVLONG.md](DEVLONG.md) §9 第五项 |
+| ~~`JdbcToolAuditLog`~~ | ✅ **已落地**（§1.15）。原先的写法（"`idempotency_key` 加 UNIQUE，因为内存版在多实例下幂等会失效"）**已作废**：幂等已由 `tool_execution_claim`（V7）+ `JdbcToolExecutionLedger` 独立解决，审计表不该也不能承担它。它真正的安全含义是审计自身的持久性，而阻塞点是接口签名给不出表的必填列——已由 `ToolAuditContext` / `ToolAuditEvent` 解开 |
 | 规范化升级 | `canonical()` 现在只去空白；应改为 Jackson 读 `TreeMap` 再序列化，消除 key 顺序影响 |
 | `WecomApprovalGate` | 企微卡片 + `expires_at` + 超时升级 + 双人复核 |
 | `AutonomyLevel` 接入调用链 | 与 `KillSwitch` 取交集：先 `assertAllowed()` 再 `canAutoExecute()` |
@@ -1384,15 +1529,14 @@ B5 之后，下列数字**依然一个都没有实测**，它们都需要「产�
 **`McpToolRegistrar`**（22 个用例，见 §1.4，堵住 I14）、
 **幂等账本三件套**（24 个用例，见 §1.5，堵住 I8）——M1 的两个**安全**缺口都已堵。
 
-上面 5 项剩余的都是工程收尾，不是安全缺口。
-`JdbcToolAuditLog` 仍然带安全含义，但**理由已经变了**：原先写的是
+上面 5 项剩余的都是工程收尾，不是安全缺口（`JdbcToolAuditLog` 已于 §1.15 落地，
+剩 4 项）。`JdbcToolAuditLog` 确实带安全含义，但**理由已经变了**：原先写的是
 「内存版在多实例下幂等会失效」——那句话现在不成立了，幂等已由
 `tool_execution_claim`（V7）+ `JdbcToolExecutionLedger` 独立解决，与审计表无关；
 而 `uq_agent_step_idem` 的粒度是「步」，本来就管不到工具调用。
 它真正的安全含义是**审计自身的持久性**：内存版重启即丢，出事后无从追责。
-而且它现在**被卡住**——`ToolAuditLog` 的签名给不出 `tool_audit_log` 的必填列
-（`trace_id` / `tool_source` / `risk_level` / `gate_outcome`），
-见 §1.5 末尾与 [DEVLONG.md](DEVLONG.md) §9 第五项。
+它曾被 `ToolAuditLog` 的签名卡住（给不出 `tool_audit_log` 的必填列），
+**§1.15 已解开**——顺带查出三条拒绝路径完全没有审计。
 
 **验收**（对应修复方案 F1.7）：
 - [ ] 未注册工具 → `ToolDeniedException` + 有拒绝审计
@@ -1432,7 +1576,7 @@ B5 之后，下列数字**依然一个都没有实测**，它们都需要「产�
 | `ConfigSnapshot` | 一次请求内配置一致，并标明基于哪一版 revision |
 | `ConfigSchemaExporter` | 导出前端可直接渲染的 JSON schema，后端加配置项前端自动多一个表单项 |
 
-**41 项参数**逐条对应 `质量与可靠性设计.md §3.1` 的 19 项冻结参数 +
+**43 项参数**逐条对应 `质量与可靠性设计.md §3.1` 的 19 项冻结参数 +
 `开工前决策冻结与返工风险评估.md §5` 补充的 6 项，并用测试锁住默认值一致性。
 
 两个上游硬限制被**编码成校验边界**，前端物理上填不出会导致故障的值：
