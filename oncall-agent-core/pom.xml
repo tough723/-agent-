@@ -35,5 +35,17 @@
       <groupId>org.springframework.ai</groupId>
       <artifactId>spring-ai-model</artifactId>
     </dependency>
+
+    <!--
+      PromptRegistry.fromClasspath 用 PathMatchingResourcePatternResolver 扫
+      prompts/*.md。它其实是 spring-ai-model 的传递依赖，但本模块的源码直接
+      import 了它，所以显式声明——传递依赖不是契约，上游哪天收敛依赖树，
+      这里会在没人改动本模块的情况下编译失败。
+      版本由 spring-boot-dependencies BOM 管，不写死。
+    -->
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-core</artifactId>
+    </dependency>
   </dependencies>
 </project>

@@ -275,39 +275,49 @@ class ArchitectureRuleTest {
     // ------------------------------------------ F11 可靠性层是叶子
 
     /**
-     * F11：{@code com.oncall.agent.llm} 不得依赖本项目任何其它模块。
+     * F11：{@code com.oncall.agent.llm} 与 {@code com.oncall.agent.prompt}
+     * 不得依赖本项目任何其它模块。
      *
-     * <p><b>为什么范围只圈 {@code .llm} 而不是整个 {@code com.oncall.agent}</b>：
+     * <p><b>为什么范围只圈这两个子包，而不是整个 {@code com.oncall.agent}</b>：
      * 编排层将来理所当然要依赖 domain 与 toolgateway，
      * 一条"agent 不得依赖 domain"的规则迟早会被人为了让编译过而删掉。
-     * 圈定 {@code .llm} 才能长期成立——重试与 failover 是<b>传输层的可靠性问题</b>，
-     * 它与"工单""风险等级""白名单"这些领域概念没有任何关系。
+     * 圈定子包才能长期成立：
+     * <ul>
+     *   <li>{@code .llm} —— 重试与 failover 是<b>传输层的可靠性问题</b>，
+     *       与"工单""风险等级""白名单"这些领域概念没有任何关系；</li>
+     *   <li>{@code .prompt} —— prompt 的装载与渲染只认「名字 + 版本 + 变量」，
+     *       它连"这段 prompt 是给 Planner 还是给意图分类用的"都不需要知道。
+     *       一旦它引了 domain，加一个 prompt 就要动领域层。</li>
+     * </ul>
      *
-     * <p>这条约束的收益是具体的：任何模块都能拿 {@code ResilientChatModel}
-     * 去包装自己的 {@code ChatModel}，而不会顺带把 domain / config 拖进依赖图。
-     * 一旦它引了 domain，{@code oncall-agent-core} 就没法被 knowledge 模块单独复用了。
+     * <p>收益是具体的：{@code oncall-agent-core} 保持零内部依赖，
+     * knowledge 模块将来才能拿同一个 {@code ResilientChatModel} 去包装
+     * embedding / reranker 的调用，也能拿同一个 {@code PromptRegistry}
+     * 管自己的 prompt——而不会顺带把 domain / config 拖进依赖图。
      */
-    private static final ArchRule F11_LLM_RESILIENCE_IS_A_LEAF =
-            noClasses().that().resideInAnyPackage("com.oncall.agent.llm..")
+    private static final ArchRule F11_AGENT_FOUNDATIONS_ARE_LEAVES =
+            noClasses().that().resideInAnyPackage("com.oncall.agent.llm..", "com.oncall.agent.prompt..")
                     .should().dependOnClassesThat().resideInAnyPackage(
                             "com.oncall.domain..", "com.oncall.config..",
                             "com.oncall.toolgateway..", "com.oncall.tooladmin..",
                             "com.oncall.ontology..")
-                    .because("LLM 的重试与 failover 是传输层可靠性问题，与领域概念无关；"
-                            + "保持零内部依赖，任何模块才能拿它包装自己的 ChatModel")
-                    .as("F11 LLM 可靠性层不得依赖其它业务模块");
+                    .because("LLM 可靠性与 prompt 装载都是与领域无关的基础件；"
+                            + "保持零内部依赖，其它模块才能直接复用")
+                    .as("F11 agent 基础件不得依赖其它业务模块");
 
     @Test
-    @DisplayName("F11 通过：LLM 可靠性层是依赖图的叶子")
-    void f11LlmResilienceIsALeaf() {
-        assertRulePasses(F11_LLM_RESILIENCE_IS_A_LEAF, production);
+    @DisplayName("F11 通过：agent 的基础件（llm / prompt）是依赖图的叶子")
+    void f11AgentFoundationsAreLeaves() {
+        assertRulePasses(F11_AGENT_FOUNDATIONS_ARE_LEAVES, production);
     }
 
     @Test
-    @DisplayName("F11 非空转：可靠性层的类确实在扫描范围内")
-    void f11CoversTheResilienceLayer() {
+    @DisplayName("F11 非空转：两个子包的类都确实在扫描范围内")
+    void f11CoversTheAgentFoundations() {
         assertTrue(production.contain("com.oncall.agent.llm.ResilientChatModel"),
                 "没扫到 ResilientChatModel，F11 的通过是空转的");
+        assertTrue(production.contain("com.oncall.agent.prompt.PromptRegistry"),
+                "没扫到 PromptRegistry，F11 的通过是空转的");
     }
 
     // ------------------------------------------------------------ 工具方法
