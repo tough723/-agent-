@@ -40,8 +40,23 @@ public final class RuleEngine {
      * 求值。
      *
      * <p>单条规则抛异常**不会**中断其余规则——某条规则的数据缺失
-     * 不应该让其他约束一起失效。异常规则被跳过并记入警告，
-     * <b>且效果按「已触发」处理不了，所以这里选择保守方向：跳过时不放宽任何约束。</b>
+     * 不应该让其他约束一起失效。
+     *
+     * <p><b>但「跳过」绝不能等于「放过」。</b>本方法此前只往 {@code warnings} 里
+     * 加一个字符串，而 {@link RuleEffect} 的效果全是<b>收紧</b>方向的
+     * （{@code requireApprovers} 取更大、{@code capAutonomy} 取更严）——
+     * 于是<b>一条收紧型规则求值失败，它那份收紧就凭空消失，
+     * 结果比真实情况更宽松，而调用方从数值上完全看不出来</b>。
+     * 默认四条规则里有三条是收紧型的（两条 {@code requireApprovers}、
+     * 一条 {@code capAutonomy}），所以这不是边角情况。
+     *
+     * <p>而「加个警告」不构成防线：警告需要有人读，
+     * 而「谁来读」在类型上没有任何约束（{@code warnings()} 在生产代码里
+     * 一个读者都没有）。
+     *
+     * <p>所以现在失败会走 {@link RuleEffect#markDegraded}，
+     * <b>把效果直接压到保守下限</b>（两人审批 + 放权上限 S1），
+     * 调用方即使完全不看警告也拿不到过宽的结论。
      */
     public RuleEffect evaluate(Ontology ontology, RuleContext context) {
         RuleEffect effect = RuleEffect.none();
@@ -51,10 +66,14 @@ public final class RuleEngine {
                 rule.evaluate(ontology, context, effect);
             } catch (RuntimeException e) {
                 errors.add(rule.id() + ": " + e.getClass().getSimpleName());
+                // 保守下限压进效果本身，而不是只留一条等人来读的警告。
+                effect.markDegraded(rule.id());
             }
         }
         if (!errors.isEmpty()) {
-            effect.warn("以下规则求值失败，相关约束未生效，请人工确认：" + String.join(", ", errors));
+            effect.warn("以下规则求值失败，已按保守下限处理（两人审批 + 放权上限 "
+                    + RuleEffect.CONSERVATIVE_AUTONOMY_CAP + "），请人工确认："
+                    + String.join(", ", errors));
         }
         return effect;
     }
