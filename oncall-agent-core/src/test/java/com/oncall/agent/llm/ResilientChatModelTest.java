@@ -30,11 +30,13 @@ class ResilientChatModelTest {
 
     private final List<Long> sleeps = new ArrayList<>();
     private final List<String> failures = new ArrayList<>();
+    private final List<CallOutcome> outcomes = new ArrayList<>();
 
     private final ResilientChatModel.Sleeper recordingSleeper = sleeps::add;
     private final ResilientChatModel.FailureListener recordingListener =
             (model, attempt, error, willRetry) ->
                     failures.add(model + "#" + attempt + ":" + willRetry);
+    private final ResilientChatModel.CallObserver recordingObserver = outcomes::add;
 
     // ------------------------------------------------------------------ 正常路径
 
@@ -291,7 +293,161 @@ class ResilientChatModelTest {
         }
     }
 
+    // ------------------------------------------------ 成功路径观测（llm_call_log 的四个必填/关键列）
+
+    @Test
+    @DisplayName("★ failover 之后 model 是备用模型，failoverFrom 是主模型")
+    void failoverIsAttributedToTheModelThatActuallyServed() {
+        ResilientChatModel r = observed(RetryPolicy.failoverOnly(), tickingAt(0L, 7_000_000L),
+                model("primary", alwaysFailing("down")),
+                model("backup", StubChatModel.returning("ok")));
+
+        r.call(new Prompt("q"));
+
+        assertThat(outcomes).hasSize(1);
+        CallOutcome o = outcomes.get(0);
+        // 调用方拿到的 ChatResponse 上没有任何模型标识，
+        // 所以这两项此前在整个代码库里都不存在——写 llm_call_log.model 只能靠编。
+        assertThat(o.model()).isEqualTo("backup");
+        assertThat(o.failoverFrom()).isEqualTo("primary");
+        assertThat(o.failedOver()).isTrue();
+        assertThat(o.attemptsOnServingModel()).isEqualTo(1);
+        assertThat(o.isRetry()).isFalse();
+    }
+
+    @Test
+    @DisplayName("没有 failover 时 failoverFrom 为 null，而不是空串")
+    void noFailoverMeansNullNotBlank() {
+        ResilientChatModel r = observed(RetryPolicy.failoverOnly(), tickingAt(0L, 3_000_000L),
+                model("primary", StubChatModel.returning("ok")),
+                model("backup", StubChatModel.returning("never")));
+
+        r.call(new Prompt("q"));
+
+        assertThat(outcomes).hasSize(1);
+        assertThat(outcomes.get(0).failoverFrom()).isNull();
+        assertThat(outcomes.get(0).failedOver()).isFalse();
+    }
+
+    @Test
+    @DisplayName("★ 同一模型上的重试不是 failover——两列在 DDL 里是分开的")
+    void retryOnTheSameModelIsNotAFailover() {
+        ResilientChatModel r = observed(
+                RetryPolicy.withBackoff(2, t -> true), tickingAt(0L, 500_000_000L),
+                model("primary", StubChatModel.returning("ok")
+                        .failFirst(1, new IllegalStateException("429"))));
+
+        r.call(new Prompt("q"));
+
+        assertThat(outcomes).hasSize(1);
+        CallOutcome o = outcomes.get(0);
+        assertThat(o.attemptsOnServingModel()).isEqualTo(2);
+        assertThat(o.isRetry()).as("is_retry 是延迟字段，不是成本字段").isTrue();
+        assertThat(o.failoverFrom()).as("重试没有换模型").isNull();
+        assertThat(o.model()).isEqualTo("primary");
+    }
+
+    @Test
+    @DisplayName("★ latency_ms 包含退避时间——否则 P95 测的不是用户感知的延迟")
+    void latencyIncludesBackoff() {
+        ResilientChatModel r = observed(
+                RetryPolicy.withBackoff(2, t -> true), tickingAt(0L, 12_345_000_000L),
+                model("primary", StubChatModel.returning("ok")
+                        .failFirst(1, new IllegalStateException("429"))));
+
+        r.call(new Prompt("q"));
+
+        assertThat(sleeps).containsExactly(500L);
+        // 12_345_000_000 ns = 12345 ms。只测最后一次成功尝试的话这里会是 0，
+        // 而用户等的那 12 秒恰好被排除在外。
+        assertThat(outcomes.get(0).latencyMs()).isEqualTo(12_345L);
+    }
+
+    @Test
+    @DisplayName("整条链耗尽时不产生任何 CallOutcome——没有成功就没有成功观测")
+    void exhaustedChainProducesNoOutcome() {
+        ResilientChatModel r = observed(RetryPolicy.failoverOnly(), tickingAt(0L),
+                model("a", alwaysFailing("down")),
+                model("b", alwaysFailing("down")));
+
+        assertThatThrownBy(() -> r.call(new Prompt("q")))
+                .isInstanceOf(ModelExhaustedException.class);
+        assertThat(outcomes).isEmpty();
+    }
+
+    // ------------------------------------------------------------------ CallOutcome 自身
+
+    @Test
+    @DisplayName("CallOutcome 拒绝空模型标识——写进 NOT NULL 列会是一行没有归属的计量")
+    void callOutcomeRejectsBlankModel() {
+        assertThatThrownBy(() -> new CallOutcome("  ", 1L, 1, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("model");
+    }
+
+    @Test
+    @DisplayName("CallOutcome 拒绝负延迟——静默的负值会污染 P95 统计")
+    void callOutcomeRejectsNegativeLatency() {
+        assertThatThrownBy(() -> new CallOutcome("m", -1L, 1, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("latencyMs");
+    }
+
+    @Test
+    @DisplayName("CallOutcome 拒绝空白 failoverFrom——它与 null 语义不同")
+    void callOutcomeRejectsBlankFailoverFrom() {
+        assertThatThrownBy(() -> new CallOutcome("m", 1L, 1, "  "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("failoverFrom");
+    }
+
+    @Test
+    @DisplayName("CallOutcome 拒绝零次尝试")
+    void callOutcomeRejectsZeroAttempts() {
+        assertThatThrownBy(() -> new CallOutcome("m", 1L, 0, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("attemptsOnServingModel");
+    }
+
+    @Test
+    @DisplayName("firstModelServed 工厂产出的是「没有 failover」")
+    void firstModelServedFactoryMeansNoFailover() {
+        CallOutcome o = CallOutcome.firstModelServed("primary", 42L, 1);
+        assertThat(o.failoverFrom()).isNull();
+        assertThat(o.failedOver()).isFalse();
+        assertThat(o.latencyMs()).isEqualTo(42L);
+    }
+
+    @Test
+    @DisplayName("Ticker.systemNanoTime 单调不回退")
+    void systemTickerIsMonotonic() {
+        ResilientChatModel.Ticker t = ResilientChatModel.Ticker.systemNanoTime();
+        long a = t.nanoTime();
+        long b = t.nanoTime();
+        assertThat(b).isGreaterThanOrEqualTo(a);
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    private ResilientChatModel observed(RetryPolicy policy, ResilientChatModel.Ticker ticker,
+                                        ModelEntry... chain) {
+        return new ResilientChatModel(List.of(chain), policy, recordingSleeper,
+                recordingListener, ticker, recordingObserver);
+    }
+
+    /**
+     * 脚本化时钟：按调用顺序返回预设的纳秒值。
+     *
+     * <p>{@code call()} 的成功路径恰好读两次——进入时与拿到响应时——
+     * 所以脚本给两个值就够。故意不 fallback 到真实时钟：
+     * 脚本用尽时抛 ArrayIndexOutOfBounds 比悄悄读真实时钟好，
+     * 后者会让一条本该失败的断言看起来通过。
+     */
+    private static ResilientChatModel.Ticker tickingAt(long... nanos) {
+        java.util.concurrent.atomic.AtomicInteger i =
+                new java.util.concurrent.atomic.AtomicInteger();
+        return () -> nanos[i.getAndIncrement()];
+    }
 
     private ResilientChatModel resilient(RetryPolicy policy, ModelEntry... chain) {
         return new ResilientChatModel(List.of(chain), policy, recordingSleeper, recordingListener);

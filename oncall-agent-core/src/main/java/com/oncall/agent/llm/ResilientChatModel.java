@@ -39,13 +39,31 @@ public final class ResilientChatModel implements ChatModel {
     private final RetryPolicy policy;
     private final Sleeper sleeper;
     private final FailureListener listener;
+    private final Ticker ticker;
+    private final CallObserver observer;
 
+    /**
+     * 四参构造：真实时钟 + 静默观测。
+     *
+     * <p>保留它是为了不破坏已有调用点；<b>但生产装配不应该用它</b>——
+     * 静默观测意味着 {@code llm_call_log} 那四列永远填不出来。
+     * 见 {@link CallObserver} 的类注释。
+     */
     public ResilientChatModel(List<ModelEntry> chain, RetryPolicy policy,
                               Sleeper sleeper, FailureListener listener) {
+        this(chain, policy, sleeper, listener,
+                Ticker.systemNanoTime(), CallObserver.silent());
+    }
+
+    public ResilientChatModel(List<ModelEntry> chain, RetryPolicy policy,
+                              Sleeper sleeper, FailureListener listener,
+                              Ticker ticker, CallObserver observer) {
         Objects.requireNonNull(chain, "chain");
         Objects.requireNonNull(policy, "policy");
         Objects.requireNonNull(sleeper, "sleeper");
         Objects.requireNonNull(listener, "listener");
+        Objects.requireNonNull(ticker, "ticker");
+        Objects.requireNonNull(observer, "observer");
         if (chain.isEmpty()) {
             // 空链意味着 call() 必然抛 ModelExhaustedException，
             // 而那是装配错误，不是运行期故障——应该在启动时就炸，
@@ -59,9 +77,11 @@ public final class ResilientChatModel implements ChatModel {
         this.policy = policy;
         this.sleeper = sleeper;
         this.listener = listener;
+        this.ticker = ticker;
+        this.observer = observer;
     }
 
-    /** 便捷构造：真实睡眠 + 静默监听。测试里请用四参构造器注入假 Sleeper。 */
+    /** 便捷构造：真实睡眠 + 静默监听。测试里请用六参构造器注入假 Sleeper 与 Ticker。 */
     public ResilientChatModel(List<ModelEntry> chain, RetryPolicy policy) {
         this(chain, policy, Sleeper.threadSleep(), FailureListener.silent());
     }
@@ -82,10 +102,21 @@ public final class ResilientChatModel implements ChatModel {
     public ChatResponse call(Prompt prompt) {
         Objects.requireNonNull(prompt, "prompt");
         RuntimeException last = null;
+        // 从进入 call() 就开始计时：latency_ms 必须包含重试与退避的全部时间。
+        // 只测「最后一次成功尝试」的话，P95 会好看很多，
+        // 而用户等的那 8 秒退避恰好被排除在外——那正是 DDL 注释点名的硬伤。
+        long startedAtNanos = ticker.nanoTime();
+        String abandoned = null;
         for (ModelEntry entry : chain) {
             for (int attempt = 1; attempt <= policy.maxAttemptsPerModel(); attempt++) {
                 try {
-                    return entry.model().call(prompt);
+                    ChatResponse response = entry.model().call(prompt);
+                    observer.onSuccess(new CallOutcome(
+                            entry.name(),
+                            (ticker.nanoTime() - startedAtNanos) / 1_000_000L,
+                            attempt,
+                            abandoned));
+                    return response;
                 } catch (RuntimeException e) {
                     // 只接 RuntimeException：call(Prompt) 没有声明受检异常，
                     // 而 Error（OOM、栈溢出）必须原样往上抛，重试它们毫无意义。
@@ -99,6 +130,10 @@ public final class ResilientChatModel implements ChatModel {
                     sleeper.sleep(policy.backoffBeforeRetry(attempt));
                 }
             }
+            // 整个模型都被放弃了，记下它——它就是下一个模型的 failoverFrom。
+            // 放在内层循环之外：同一个模型上的多次重试不算 failover，
+            // 那是 is_retry 的语义，两列在 DDL 里是分开的。
+            abandoned = entry.name();
         }
         throw new ModelExhaustedException(chain.size(), last);
     }
@@ -161,6 +196,60 @@ public final class ResilientChatModel implements ChatModel {
                     Thread.currentThread().interrupt();
                     throw new IllegalStateException("failover 退避等待被中断", e);
                 }
+            };
+        }
+    }
+
+    /**
+     * 单调时钟。抽成接口的理由与 {@link Sleeper} 完全相同：
+     * 让测试不必真的等，也让延迟可以被确定性断言。
+     *
+     * <p><b>用 {@code nanoTime} 而不是 {@code currentTimeMillis}</b>：
+     * 墙上时钟会被 NTP 往回拨，一次回拨就能让 {@code latency_ms} 变成负数，
+     * 而 {@link CallOutcome} 会把它拒掉——于是变成一次莫名其妙的异常。
+     * 单调时钟不会往回走，这个失败模式从根上不存在。
+     */
+    @FunctionalInterface
+    public interface Ticker {
+
+        long nanoTime();
+
+        /** 生产用的真实单调时钟。 */
+        static Ticker systemNanoTime() {
+            return System::nanoTime;
+        }
+    }
+
+    /**
+     * <b>成功</b>调用的观测口。与 {@link FailureListener} 对称——
+     * 后者只报失败，前者报成功，两个合起来才够填满 {@code llm_call_log}。
+     *
+     * <p><b>为什么这个口必须存在：</b>
+     * {@code llm_call_log} 的 {@code model} / {@code latency_ms} / {@code is_retry}
+     * 三列是 {@code NOT NULL}，而它们<b>只有这一层知道</b>——
+     * 调用方拿到的是一个 {@code ChatResponse}，上面既没有模型标识也没有耗时。
+     * 没有这个口，写这张表的代码就只能编造这三列，
+     * 而一张字段造假的计量表比没有计量更糟：它会给出看起来可信的错误成本。
+     *
+     * <p>本接口<b>刻意不写库</b>：凑齐一行还需要 {@code prompt_version} 与
+     * {@code call_type}，那两列的知识在 {@code agent.prompt} 与编排层，
+     * 而 F11 禁止本包依赖它们。所以这里只交事实，落库由上层做。
+     *
+     * @see CallOutcome
+     */
+    @FunctionalInterface
+    public interface CallObserver {
+
+        void onSuccess(CallOutcome outcome);
+
+        /**
+         * 什么都不做的观测器。
+         *
+         * <p>它是默认值而不是唯一选项——<b>用它就等于放弃 {@code llm_call_log} 的三列必填字段</b>。
+         * 留它存在只是为了让「不关心计量」的调用方（例如单元测试）不必写一个空 lambda。
+         */
+        static CallObserver silent() {
+            return outcome -> {
             };
         }
     }
