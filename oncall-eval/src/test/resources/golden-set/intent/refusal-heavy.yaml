@@ -1,0 +1,16 @@
+id: refusal-heavy
+description: 专门用来验证「拒答率在标注集上不设门槛」这个决定的小集子
+cases:
+  - { id: RH-001, group: out-of-scope, expect: OUT_OF_SCOPE, text: "帮我写个快排" }
+  - { id: RH-002, group: out-of-scope, expect: OUT_OF_SCOPE, text: "今天天气" }
+  - { id: RH-003, group: out-of-scope, expect: OUT_OF_SCOPE, text: "翻译这段话" }
+  - { id: RH-004, group: out-of-scope, expect: OUT_OF_SCOPE, text: "订张票" }
+  - { id: RH-005, group: out-of-scope, expect: OUT_OF_SCOPE, text: "讲个笑话" }
+  - { id: RH-006, group: out-of-scope, expect: OUT_OF_SCOPE, text: "你们公司营收多少" }
+  - { id: RH-007, group: explain-alert, expect: EXPLAIN_ALERT, text: "这条告警什么意思" }
+  - { id: RH-008, group: explain-alert, expect: EXPLAIN_ALERT, text: "为什么会触发" }
+  - { id: RH-009, group: query-history, expect: QUERY_HISTORY, text: "上次也这样吗" }
+  - { id: RH-010, group: chitchat, expect: CHITCHAT, text: "你好" }
+  # 必须有一条 EXECUTE：judge 对「集子里没有 EXECUTE 用例」是判不通过的，
+  # 因为召回率是硬门槛，分母为 0 不能算过。
+  - { id: RH-011, group: execute-explicit, expect: EXECUTE, text: "重启 order-service" }

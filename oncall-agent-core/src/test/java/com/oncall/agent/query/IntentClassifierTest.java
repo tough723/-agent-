@@ -398,6 +398,8 @@ class IntentClassifierTest {
                 ActiveVersionSource.fixed(Map.of("intent-classify", "v1")));
         ConfigService config = new ConfigService(
                 OnCallConfigRegistry.create(), store, new InMemoryConfigAuditLog());
-        return new IntentClassifier(model, prompts, config);
+        // 用 ConfigBackedQuerySettings 而不是 QuerySettings.of：
+        // 这里要测的正是"改了 store 立刻生效"，冻结值会把那条断言变成假的。
+        return new IntentClassifier(model, prompts, new ConfigBackedQuerySettings(config));
     }
 }

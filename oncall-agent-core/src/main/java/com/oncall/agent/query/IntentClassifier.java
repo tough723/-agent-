@@ -3,8 +3,6 @@ package com.oncall.agent.query;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oncall.agent.prompt.PromptRegistry;
-import com.oncall.config.ConfigService;
-import com.oncall.config.OnCallConfigKeys;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -99,17 +97,23 @@ public final class IntentClassifier {
 
     private final ChatModel model;
     private final PromptRegistry prompts;
-    private final ConfigService config;
+    private final QuerySettings settings;
 
     /**
-     * @param config 必须每次调用都读，不能在构造时取值快照——
-     *               {@code query.rewrite-enabled} 与 {@code query.rewrite-min-confidence}
-     *               都是 {@code RUNTIME_HOT}，构造时读一次就成了假热更新
+     * @param settings 生产传 {@link ConfigBackedQuerySettings}（每次调用都回配置读，
+     *                 这两个键是 {@code RUNTIME_HOT}）；
+     *                 评测跑批传 {@link QuerySettings#of}（整批冻结，
+     *                 否则一次跑批跨了配置变更，录下来的输出就混了两组配置）
      */
-    public IntentClassifier(ChatModel model, PromptRegistry prompts, ConfigService config) {
+    public IntentClassifier(ChatModel model, PromptRegistry prompts, QuerySettings settings) {
         this.model = Objects.requireNonNull(model, "model");
         this.prompts = Objects.requireNonNull(prompts, "prompts");
-        this.config = Objects.requireNonNull(config, "config");
+        this.settings = Objects.requireNonNull(settings, "settings");
+    }
+
+    /** 本次分类实际会用的设置。评测录制靠它写 provenance，理由见 {@link QuerySettings}。 */
+    public QuerySettings settings() {
+        return settings;
     }
 
     /**
@@ -175,7 +179,7 @@ public final class IntentClassifier {
                 .toList();
 
         String suppressed = null;
-        if (!config.getBoolean(OnCallConfigKeys.QUERY_REWRITE_ENABLED)) {
+        if (!settings.rewriteEnabled()) {
             suppressed = "query.rewrite-enabled 已关闭";
         } else if (!fabricated.isEmpty()) {
             // 护栏 3（只补全不替换）：模型声称消解的指代必须真的出现在原句里。
@@ -183,10 +187,9 @@ public final class IntentClassifier {
             // 于是丢掉**整个**改写，而不是只丢掉那一条实体。
             // 少丢一点换不回什么，改歪的代价是答非所问且用户看不出来。
             suppressed = "模型声称消解的指代不在原句里（疑似编造）：" + fabricated;
-        } else if (confidence < config.getDouble(OnCallConfigKeys.QUERY_REWRITE_MIN_CONFIDENCE)) {
+        } else if (confidence < settings.rewriteMinConfidence()) {
             // 护栏 2：宁可召回差，不要改歪
-            suppressed = "置信度 " + confidence + " 低于阈值 "
-                    + config.getDouble(OnCallConfigKeys.QUERY_REWRITE_MIN_CONFIDENCE);
+            suppressed = "置信度 " + confidence + " 低于阈值 " + settings.rewriteMinConfidence();
         } else if (!modelWantsRewrite) {
             suppressed = "模型自报未改写";
         } else if (standalone.isBlank()) {
