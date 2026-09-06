@@ -95,7 +95,7 @@ class McpToolRegistrarTest {
     }
 
     private static ApprovalGate autoApprove() {
-        return (key, policy, args) -> Approval.granted("auto");
+        return (key, policy, args, ctx) -> Approval.granted("auto");
     }
 
     // ------------------------------------------------------------ 纳管决策

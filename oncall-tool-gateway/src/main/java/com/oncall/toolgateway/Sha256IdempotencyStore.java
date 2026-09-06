@@ -14,9 +14,14 @@ import java.util.HexFormat;
  * 语义相同但字面量不同。不规范化会产生不同幂等键，导致重试时二次执行——
  * 在运维场景就是二次扩容、二次重启，是会出真事故的。
  *
- * <p>当前 {@code canonical} 只做去空白（够用但不完美：JSON key 顺序不同仍会产生不同键）。
- * 生产建议换成 Jackson 读成 {@code TreeMap} 再序列化，彻底消除 key 顺序影响。
- * 该改进已记入 DEVELOPMENT.md 的 M1 待办。
+ * <p>规范化由 {@link JsonCanonicalizer} 承担（轨道 C2 落地）：
+ * 键递归排序 + 数组保序 + 去非结构性空白 + 数字归一
+ * （{@code 8} / {@code 8.0} / {@code 8.00} 同值）。
+ *
+ * <p><b>本类的 javadoc 曾写着「canonical 只做去空白，JSON key 顺序不同仍会产生不同键」</b>，
+ * 那句话在 C2 之后就过期了。它过期得很危险：读到的人会以为幂等还有已知缺口，
+ * 从而在自己的代码里额外加一层防重——而那层防重是多余的。
+ * <b>改实现之后，指向旧行为的所有注释都要一起改，包括别的文件里的。</b>
  */
 public class Sha256IdempotencyStore implements IdempotencyStore {
 

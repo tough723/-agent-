@@ -570,7 +570,7 @@ class GuardedToolCallbackTest {
     }
 
     private static ApprovalGate autoApprove() {
-        return (key, policy, args) -> Approval.granted("auto");
+        return (key, policy, args, ctx) -> Approval.granted("auto");
     }
 
     /** 记录被调用情况的假工具。 */
@@ -650,15 +650,18 @@ class GuardedToolCallbackTest {
         private final Approval result;
         int calls;
         String lastArgs;
+        ToolAuditContext lastContext;
 
         RecordingGate(Approval result) {
             this.result = result;
         }
 
         @Override
-        public Approval await(String idempotencyKey, ToolPolicy policy, String args) {
+        public Approval await(String idempotencyKey, ToolPolicy policy, String args,
+                              ToolAuditContext context) {
             calls++;
             lastArgs = args;
+            lastContext = context;
             return result;
         }
     }
