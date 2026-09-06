@@ -1,0 +1,4 @@
+id: dup
+cases:
+  - { id: X-001, group: g, expect: EXECUTE, text: "重启 a" }
+  - { id: X-001, group: g, expect: CHITCHAT, text: "你好" }

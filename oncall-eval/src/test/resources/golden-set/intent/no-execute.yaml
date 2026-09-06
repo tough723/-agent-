@@ -1,0 +1,3 @@
+id: noexec
+cases:
+  - { id: X-001, group: g, expect: CHITCHAT, text: "你好" }

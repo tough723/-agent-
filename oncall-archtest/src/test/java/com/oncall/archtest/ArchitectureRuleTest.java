@@ -39,7 +39,8 @@ class ArchitectureRuleTest {
             "com.oncall.toolgateway",
             "com.oncall.tooladmin",
             "com.oncall.agent",
-            "com.oncall.ontology"
+            "com.oncall.ontology",
+            "com.oncall.eval"
     };
 
     /**
@@ -324,6 +325,42 @@ class ArchitectureRuleTest {
                 "没扫到 ResilientChatModel，F11 的通过是空转的");
         assertTrue(production.contain("com.oncall.agent.prompt.PromptRegistry"),
                 "没扫到 PromptRegistry，F11 的通过是空转的");
+    }
+
+    // ------------------------------------------------------------ F12 评测层
+
+    /**
+     * F12：评测代码不得被任何生产模块依赖。
+     *
+     * <p>{@code oncall-eval} 的产物是<b>判据</b>，不是能力。
+     * 一旦生产代码 import 了它，就会出现两类很难发现的坏事：
+     * <ul>
+     *   <li>标注集被打进运行时依赖，评测数据跟着应用一起发布；</li>
+     *   <li>更糟的是有人为了"顺便复用"某个指标计算，
+     *       把评测逻辑接进请求路径——那等于让线上行为依赖一份 Git 里的 YAML。</li>
+     * </ul>
+     *
+     * <p>这条约束的成本极低（评测层本来就没有理由被别人依赖），
+     * 而它挡住的是"依赖方向悄悄反过来"这类退化。
+     */
+    private static final ArchRule F12_EVAL_IS_NOT_A_PRODUCTION_DEPENDENCY =
+            noClasses().that().resideOutsideOfPackage("com.oncall.eval..")
+                    .should().dependOnClassesThat().resideInAnyPackage("com.oncall.eval..")
+                    .because("评测层的产物是判据而不是能力；被生产代码依赖会让"
+                            + "标注集进运行时、甚至让线上行为依赖一份 Git 里的 YAML")
+                    .as("F12 评测层不得被生产代码依赖");
+
+    @Test
+    @DisplayName("F12 通过：没有生产代码依赖评测层")
+    void f12EvalIsNotAProductionDependency() {
+        assertRulePasses(F12_EVAL_IS_NOT_A_PRODUCTION_DEPENDENCY, production);
+    }
+
+    @Test
+    @DisplayName("F12 非空转：评测层的类确实在扫描范围内")
+    void f12CoversTheEvalLayer() {
+        assertTrue(production.contain("com.oncall.eval.ExecuteRecallGate"),
+                "没扫到 ExecuteRecallGate，F12 的通过是空转的");
     }
 
     // ------------------------------------------------------------ 工具方法

@@ -64,6 +64,11 @@
     -->
     <module>oncall-agent-core</module>
     <module>oncall-ontology</module>
+    <!--
+      L3 评测。放在 ontology 之后：它依赖 agent-core（要拿 Intent 与规则层的正则），
+      而 archtest 要能看到它的字节码（F12 断言"评测代码不得被生产代码依赖"）。
+    -->
+    <module>oncall-eval</module>
     <!-- 无生产代码，只有测试：架构约束（含基石 F9）。必须最后，它依赖全部模块。 -->
     <module>oncall-archtest</module>
   </modules>

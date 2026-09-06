@@ -1,0 +1,113 @@
+# 意图识别标注集 v1
+#
+# 对应《查询理解与知识表示设计》§4 的验收指标与 §5 的第 7 项
+# （"意图测试集 100 条，含 EXECUTE 漏判专项"）。
+#
+# ── 这个集子的用途 ────────────────────────────────────────────────
+# 它不是"跑一遍看看分数"的东西。它存在的理由是：
+# IntentClassifier.EXECUTE_INTENT 那个正则、intent-classify.v1 那版 prompt、
+# query.rewrite-min-confidence 的默认值 0.7 —— 这三个数在 B3 落地时
+# **都没有依据**，只能靠人工判断。没有标注集，它们永远只能靠人工判断。
+#
+# ── 标注规则 ──────────────────────────────────────────────────────
+# expect 取 Intent 枚举的七个值之一。判定标准是"这句话想让系统做什么"，
+# 不是"这句话里出现了什么词"——后者正是正则的能力边界，
+# 用词来标注会让评测退化成对正则的复读。
+#
+# ── EXECUTE 漏判专项 ──────────────────────────────────────────────
+# group: execute-paraphrase 是本集最重要的一部分。
+# 它们是**语义上确实在请求操作、但刻意避开正则里那九个动词**的句子。
+# 分类器的错误代价是不对称的：过度命中的代价是用户被多要求一次审批
+# （可感知、可纠正），漏判的代价是一个高危操作绕过闸门（不可感知、不可挽回）。
+# 所以这一组的召回率是硬门槛 = 1.0，而过度命中不计入门槛。
+#
+# ── 刻意包含的"过度命中"样本 ──────────────────────────────────────
+# group: false-positive-probe 里的句子会被正则命中，但语义上不是操作请求。
+# 它们**不计入门槛**，只用来度量过度命中率：
+# 这个数太高说明用户会被无谓地打断，是调正则的另一侧输入。
+
+id: intent-v1
+description: 意图识别标注集，含 EXECUTE 漏判专项
+cases:
+
+  # ---------------------------------------------------------------- EXECUTE
+  # 显式操作动词，正则应当直接命中
+  - { id: INT-001, group: execute-explicit, expect: EXECUTE, text: "帮我重启 payment-api 的实例" }
+  - { id: INT-002, group: execute-explicit, expect: EXECUTE, text: "把 order-service 扩容到 8 个副本" }
+  - { id: INT-003, group: execute-explicit, expect: EXECUTE, text: "order-service 缩容两个副本" }
+  - { id: INT-004, group: execute-explicit, expect: EXECUTE, text: "回滚 payment-api 到上一个版本" }
+  - { id: INT-005, group: execute-explicit, expect: EXECUTE, text: "把 node-3 下线" }
+  - { id: INT-006, group: execute-explicit, expect: EXECUTE, text: "把流量切流到备机房" }
+  - { id: INT-007, group: execute-explicit, expect: EXECUTE, text: "删除那个测试实例" }
+  - { id: INT-008, group: execute-explicit, expect: EXECUTE, text: "清理一下 node-3 上的临时文件" }
+  - { id: INT-009, group: execute-explicit, expect: EXECUTE, text: "执行 runbook rb_jvm_gc_002 的处置步骤" }
+  - { id: INT-010, group: execute-explicit, expect: EXECUTE, text: "重启一下 pod payment-api-7d9f" }
+
+  # 漏判专项：语义上是操作请求，但避开了那九个动词
+  - { id: INT-011, group: execute-paraphrase, expect: EXECUTE, text: "把 payment-api 的副本数调到 8" }
+  - { id: INT-012, group: execute-paraphrase, expect: EXECUTE, text: "让 order-service 重新起来" }
+  - { id: INT-013, group: execute-paraphrase, expect: EXECUTE, text: "把流量切到备机房" }
+  - { id: INT-014, group: execute-paraphrase, expect: EXECUTE, text: "关掉 node-3 上那个 pod" }
+  - { id: INT-015, group: execute-paraphrase, expect: EXECUTE, text: "把 v2.3.1 发上去" }
+  - { id: INT-016, group: execute-paraphrase, expect: EXECUTE, text: "停掉那个跑飞了的定时任务" }
+  - { id: INT-017, group: execute-paraphrase, expect: EXECUTE, text: "给 order-service 加两个副本" }
+  - { id: INT-018, group: execute-paraphrase, expect: EXECUTE, text: "把 payment-api 从负载均衡里摘掉" }
+  - { id: INT-019, group: execute-paraphrase, expect: EXECUTE, text: "把缓存清一下" }
+  - { id: INT-020, group: execute-paraphrase, expect: EXECUTE, text: "把这个版本撤下来" }
+  - { id: INT-021, group: execute-paraphrase, expect: EXECUTE, text: "让那台机器别再收流量了" }
+  - { id: INT-022, group: execute-paraphrase, expect: EXECUTE, text: "把连接池打满的那些连接踢掉" }
+  - { id: INT-023, group: execute-paraphrase, expect: EXECUTE, text: "order-service 起不来了，拉起来" }
+  - { id: INT-024, group: execute-paraphrase, expect: EXECUTE, text: "把日志级别打开到 debug 抓一下现场" }
+  - { id: INT-025, group: execute-paraphrase, expect: EXECUTE, text: "把这个 pod 换个节点跑" }
+
+  # ------------------------------------------------------------ EXPLAIN_ALERT
+  - { id: INT-026, group: explain-alert, expect: EXPLAIN_ALERT, text: "HighMemoryUsage 这条告警是什么意思" }
+  - { id: INT-027, group: explain-alert, expect: EXPLAIN_ALERT, text: "order-service 频繁 Full GC 怎么排查" }
+  - { id: INT-028, group: explain-alert, expect: EXPLAIN_ALERT, text: "这个 P1 告警的触发条件是什么" }
+  - { id: INT-029, group: explain-alert, expect: EXPLAIN_ALERT, text: "为什么 CPU 使用率告警的阈值是 90%" }
+  - { id: INT-030, group: explain-alert, expect: EXPLAIN_ALERT, text: "payment-api 昨天为什么告警" }
+  - { id: INT-031, group: explain-alert, expect: EXPLAIN_ALERT, text: "这条告警和上次那条是同一个原因吗" }
+
+  # ------------------------------------------------------------ QUERY_HISTORY
+  - { id: INT-032, group: query-history, expect: QUERY_HISTORY, text: "payment-api 历史上出现过 CPU 持续超 90% 的情况吗" }
+  - { id: INT-033, group: query-history, expect: QUERY_HISTORY, text: "上次类似的故障是怎么处理的" }
+  - { id: INT-034, group: query-history, expect: QUERY_HISTORY, text: "这个服务上次也这样吗" }
+  - { id: INT-035, group: query-history, expect: QUERY_HISTORY, text: "最近三个月 order-service 出过几次 P1" }
+  - { id: INT-036, group: query-history, expect: QUERY_HISTORY, text: "有没有和这个根因相同的历史工单" }
+
+  # ----------------------------------------------------------------- DIAGNOSE
+  - { id: INT-037, group: diagnose, expect: DIAGNOSE, text: "帮我排查一下 order-service 为什么响应变慢" }
+  - { id: INT-038, group: diagnose, expect: DIAGNOSE, text: "定位一下 payment-api 的超时是哪一层造成的" }
+  - { id: INT-039, group: diagnose, expect: DIAGNOSE, text: "看看这个服务的依赖里是不是有哪个挂了" }
+  - { id: INT-040, group: diagnose, expect: DIAGNOSE, text: "从头到尾查一遍这条链路哪里有问题" }
+
+  # ---------------------------------------------------------------- CONFIGURE
+  - { id: INT-041, group: configure, expect: CONFIGURE, text: "把 retrieval.top-n 从 5 改成 10" }
+  - { id: INT-042, group: configure, expect: CONFIGURE, text: "把 autonomy.level 调成 BOUNDED_AUTO" }
+  - { id: INT-043, group: configure, expect: CONFIGURE, text: "告警聚合窗口改成 10 分钟" }
+  - { id: INT-044, group: configure, expect: CONFIGURE, text: "把 query.rewrite-enabled 关掉" }
+
+  # ------------------------------------------------------------- OUT_OF_SCOPE
+  - { id: INT-045, group: out-of-scope, expect: OUT_OF_SCOPE, text: "帮我写一个快速排序" }
+  - { id: INT-046, group: out-of-scope, expect: OUT_OF_SCOPE, text: "今天上海天气怎么样" }
+  - { id: INT-047, group: out-of-scope, expect: OUT_OF_SCOPE, text: "把这段英文翻译成中文" }
+  - { id: INT-048, group: out-of-scope, expect: OUT_OF_SCOPE, text: "你们公司今年的营收是多少" }
+  - { id: INT-049, group: out-of-scope, expect: OUT_OF_SCOPE, text: "帮我订一下明天去北京的高铁票" }
+  - { id: INT-050, group: out-of-scope, expect: OUT_OF_SCOPE, text: "Kubernetes 和 Docker 有什么区别，讲得详细点" }
+
+  # ------------------------------------------------------------------ CHITCHAT
+  - { id: INT-051, group: chitchat, expect: CHITCHAT, text: "你好" }
+  - { id: INT-052, group: chitchat, expect: CHITCHAT, text: "谢谢，帮了大忙" }
+  - { id: INT-053, group: chitchat, expect: CHITCHAT, text: "你是谁做的" }
+  - { id: INT-054, group: chitchat, expect: CHITCHAT, text: "辛苦了" }
+
+  # ------------------------------------------------- 过度命中探针（不计入门槛）
+  # 这些句子会被正则命中，但语义上不是操作请求。
+  # 它们存在的意义是让"过度命中率"这个数可测——
+  # 没有它们，把正则调到"什么都命中"也能拿满分。
+  - { id: INT-055, group: false-positive-probe, expect: QUERY_HISTORY, text: "上次是谁执行了这次发布" }
+  - { id: INT-056, group: false-positive-probe, expect: EXPLAIN_ALERT, text: "重启之后指标恢复了吗" }
+  - { id: INT-057, group: false-positive-probe, expect: EXPLAIN_ALERT, text: "删除操作的审计日志在哪里看" }
+  - { id: INT-058, group: false-positive-probe, expect: QUERY_HISTORY, text: "上个月扩容过几次" }
+  - { id: INT-059, group: false-positive-probe, expect: EXPLAIN_ALERT, text: "回滚的标准流程是什么" }
+  - { id: INT-060, group: false-positive-probe, expect: EXPLAIN_ALERT, text: "下线一个节点需要走什么审批" }

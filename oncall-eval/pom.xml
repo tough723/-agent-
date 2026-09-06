@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.oncall</groupId>
+    <artifactId>oncall-agent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>oncall-eval</artifactId>
+  <name>oncall-eval</name>
+
+  <!--
+    L3 评测。
+
+    这个模块存在的第一条理由是《查询理解与知识表示设计》§4 的验收指标
+    至今一条都算不出来：EXECUTE_INTENT 那个正则、intent-classify.v1 那版 prompt、
+    query.rewrite-min-confidence 的默认值 0.7，三个数在 B3 落地时都没有依据。
+
+    ── L3 被拆成两半，这是本模块最重要的设计决定 ──────────────────────
+
+    「跑批」是非确定的（真模型、真检索），进 CI 就是随机红，
+    红了没人分得清是系统坏了还是模型今天不高兴——这个坑本项目在
+    oncall-agent-core 的模块注释里已经写过一次。
+
+    所以 L3 拆成：
+      · 产出一半（非确定）：真模型跑 Golden Set，把输出录下来。
+        每晚 / 发版前跑，**不在 CI 里**。
+      · 判定一半（确定）：读标注 + 读录下来的输出，算指标、卡门槛。
+        **在 CI 里**。
+
+    这样门槛本身是确定的，即使被测系统不是。
+
+    ── 本模块现在只实现了判定一半里唯一能确定的那块 ──────────────────
+
+    EXECUTE 召回率 = 1.0 是硬门槛，而它只依赖规则层的正则、
+    **完全不经过 LLM**，所以它是 L3 里唯一现在就能进 CI 当门槛的判据。
+    其余指标（意图准确率 ≥ 0.95、拒答率 5–25%、Recall@5、引用幻觉率）
+    都要等产出一半存在，这里刻意不提前搭空壳。
+
+    ── 资源目录偏离了文档写的位置，理由是可靠性 ──────────────────────
+    《质量与可靠性设计》§2.4 把评测集放在 oncall-eval/golden-set/。
+    实际放在 src/main/resources/golden-set/：按工作目录相对路径读文件，
+    在 mvn -pl 与 IDE 里行为不一致，是"本地能跑 CI 挂"的经典来源。
+    放 classpath 上没有这个变量，而且同样进 Git、同样能被 -Deval.set 选中。
+  -->
+
+  <dependencies>
+    <!-- IntentCase.expect 的类型是 Intent，判定门槛要拿 IntentClassifier 的正则 -->
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-agent-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
+      Golden Set 用 YAML，格式照《质量与可靠性设计》§2.4。
+      版本由 spring-boot-dependencies BOM 管。
+    -->
+    <dependency>
+      <groupId>org.yaml</groupId>
+      <artifactId>snakeyaml</artifactId>
+    </dependency>
+  </dependencies>
+</project>

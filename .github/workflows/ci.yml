@@ -81,9 +81,16 @@ jobs:
       - name: Build & test oncall-ontology (轻量本体，纯 Java，零外部依赖)
         run: ./.github/mvn-test.sh oncall-ontology
 
+      # L3 评测。这一步里有整个仓库唯一一个"质量门槛"性质的断言：
+      # ExecuteRecallGateTest.shippedRegexMeetsTheHardGate ——
+      # EXECUTE 召回率必须 = 1.0，漏一条就红。
+      # 它能进 CI 是因为只依赖规则层的正则、完全不经过 LLM，所以是确定的。
+      - name: Build & test oncall-eval (L3 评测：EXECUTE 召回率硬门槛)
+        run: ./.github/mvn-test.sh oncall-eval
+
       # 必须排在最后：F9 要能看到网关以外的代码，它依赖全部模块。
       # 这个模块没有生产代码，只有架构约束测试。
-      - name: Build & test oncall-archtest (架构约束 F1-F4、F9-F11)
+      - name: Build & test oncall-archtest (架构约束 F1-F4、F9-F12)
         run: ./.github/mvn-test.sh oncall-archtest
 
       # ArchUnit 是新引入的依赖，把解析到的版本带出来，

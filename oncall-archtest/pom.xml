@@ -67,6 +67,11 @@
       <artifactId>oncall-ontology</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-eval</artifactId>
+      <version>${project.version}</version>
+    </dependency>
 
     <!--
       ToolCallback / ToolDefinition 需要出现在编译期，
