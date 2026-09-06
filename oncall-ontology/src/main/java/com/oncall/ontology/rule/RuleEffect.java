@@ -16,6 +16,7 @@ public final class RuleEffect {
     private final List<String> firedRuleIds = new ArrayList<>();
     private final List<String> warnings = new ArrayList<>();
     private final List<String> degradedRuleIds = new ArrayList<>();
+    private final List<String> disabledRuleIds = new ArrayList<>();
     private int minApprovers = 1;
     private String maxAutonomy = null;
 
@@ -99,11 +100,41 @@ public final class RuleEffect {
     }
 
     /** 是否有规则求值失败。<b>true 时本效果是保守下限，不是精确结论。</b> */
+    /**
+     * 记录一条<b>被人为停用</b>的规则。
+     *
+     * <p><b>与 {@link #markDegraded(String)} 的区别是这个类里最关键的一条设计：</b>
+     * 两者都意味着「这条规则的约束没有施加」，但方向相反——
+     * <ul>
+     *   <li><b>降级</b>是系统不知道答案，所以<b>压保守下限</b>；</li>
+     *   <li><b>停用</b>是人明确说了不要这条约束，所以<b>绝不能压下限</b>——
+     *       压了就等于停用功能永远不生效。</li>
+     * </ul>
+     *
+     * <p>反过来也成立：一条求值失败的规则绝不能被记成「已停用」，
+     * 否则轨道 C6 堵上的洞会重新打开——失败会伪装成「运维关掉了」。
+     * 所以这是两个独立的方法、两个独立的列表，不是一个布尔标志。
+     */
+    void markDisabled(String ruleId) {
+        disabledRuleIds.add(ruleId);
+        // 记进警告是为了让「这次求值少了哪条约束」在审计里可见。
+        // 但它不构成防线——真正的差别是不压保守下限。
+        warn("规则 " + ruleId + " 已被停用，本次求值未施加其约束");
+    }
+
     public boolean degraded() {
         return !degradedRuleIds.isEmpty();
     }
 
     /** 哪些规则求值失败了。审计里必须能看到「这个约束是猜的」。 */
+    /**
+     * 哪些规则是被<b>人为停用</b>的。与 {@link #degradedRuleIds()} 严格分开——
+     * 前者是运维的决定，后者是系统的故障，混在一起就再也分不出来了。
+     */
+    public List<String> disabledRuleIds() {
+        return Collections.unmodifiableList(disabledRuleIds);
+    }
+
     public List<String> degradedRuleIds() {
         return Collections.unmodifiableList(degradedRuleIds);
     }

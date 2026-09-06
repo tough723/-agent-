@@ -3,6 +3,8 @@ package com.oncall.ontology.rule;
 import com.oncall.ontology.Ontology;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 
 /**
  * 规则求值器。四条规则顺序执行，效果累加。
@@ -21,6 +23,7 @@ import java.util.List;
 public final class RuleEngine {
 
     private final List<OntologyRule> rules;
+    private final Set<String> disabledRuleIds;
 
     /** 默认四条规则。 */
     public RuleEngine() {
@@ -33,7 +36,24 @@ public final class RuleEngine {
     }
 
     public RuleEngine(List<OntologyRule> rules) {
+        this(rules, Set.of());
+    }
+
+    /**
+     * @param disabledRuleIds 被停用的规则 id，对应 {@code onto_rule.enabled = FALSE}。
+     *
+     * <p><b>刻意不加成 {@code RuleEngine(Set)} 单参重载</b>——
+     * 那会与上面的 {@code RuleEngine(List)} 同元数、仅参数类型不同，
+     * 于是已有的 {@code new RuleEngine(null)} 会变成歧义调用。
+     * 轨道 C4 已经因为同样的原因红过一次。
+     *
+     * <p>仍然符合类注释里「不提供运行时增删规则的接口」：
+     * 这是<b>构造期</b>参数，不是热更新——停用一条规则依然要走变更审批再重新装配。
+     */
+    public RuleEngine(List<OntologyRule> rules, Set<String> disabledRuleIds) {
         this.rules = List.copyOf(rules);
+        Objects.requireNonNull(disabledRuleIds, "disabledRuleIds");
+        this.disabledRuleIds = Set.copyOf(disabledRuleIds);
     }
 
     /**
@@ -62,6 +82,17 @@ public final class RuleEngine {
         RuleEffect effect = RuleEffect.none();
         List<String> errors = new ArrayList<>();
         for (OntologyRule rule : rules) {
+            if (disabledRuleIds.contains(rule.id())) {
+                // 在求值<b>之前</b>就跳过：被停用的规则连跑都不该跑。
+                // 这个顺序有实际后果——一条既被停用又会抛异常的规则
+                // 不会被记成降级，因为它根本没执行。
+                //
+                // 而 markDisabled 与 markDegraded 的方向相反：
+                // 停用是人的决定，绝不能压保守下限（压了停用就永远不生效）；
+                // 降级是系统不知道答案，必须压下限。
+                effect.markDisabled(rule.id());
+                continue;
+            }
             try {
                 rule.evaluate(ontology, context, effect);
             } catch (RuntimeException e) {
@@ -74,6 +105,22 @@ public final class RuleEngine {
             effect.warn("以下规则求值失败，已按保守下限处理（两人审批 + 放权上限 "
                     + RuleEffect.CONSERVATIVE_AUTONOMY_CAP + "），请人工确认："
                     + String.join(", ", errors));
+        }
+        for (String id : disabledRuleIds) {
+            boolean known = false;
+            for (OntologyRule rule : rules) {
+                if (rule.id().equals(id)) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                // 库里写了一个引擎里不存在的 id，最可能是拼写错误。
+                // 后果是具体的：运维以为自己关掉了某条规则，
+                // 而真正那条规则照常在跑——静默失效，且没有任何报错。
+                effect.warn("停用列表中的 " + id + " 不是本引擎已知的规则 id，"
+                        + "可能是拼写错误；对应规则并未被停用");
+            }
         }
         return effect;
     }

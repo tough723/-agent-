@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -370,5 +371,95 @@ class RuleEngineTest {
         String w = e.warnings().get(0);
         assertTrue(w.contains("R-BROKEN"), w);
         assertTrue(w.contains("保守下限"), w);
+    }
+
+    // -------------------------------------------------- 停用 ≠ 降级（onto_rule.enabled）
+
+    @Test
+    @DisplayName("★ 停用的收紧型规则不压保守下限——否则停用永远不生效")
+    void disabledRuleDoesNotPressTheConservativeFloor() {
+        RuleEngine engine = new RuleEngine(
+                List.of(new IrreversibleNeedsTwoApprovals()), Set.of("R1"));
+        RuleEffect e = engine.evaluate(ontology,
+                ctx("service:payment-batch", "alert:cpu", RiskLevel.LOW, true, RuleContext.NO_RUNBOOK));
+
+        // 与 C6 的 failingTighteningRuleStillRequiresTwoApprovers 正好相反：
+        // 那里失败 ⇒ 2 人；这里停用 ⇒ 1 人。
+        // 两者都意味着「约束没施加」，但一个是系统不知道答案，一个是人说了不要。
+        assertEquals(1, e.minApprovers());
+        assertNull(e.maxAutonomy());
+        assertFalse(e.degraded());
+    }
+
+    @Test
+    @DisplayName("停用记进 disabledRuleIds，降级记进 degradedRuleIds——两个列表严格分开")
+    void disabledAndDegradedAreSeparateLists() {
+        RuleEngine engine = new RuleEngine(
+                List.of(brokenTighteningRule("R-BROKEN"), new IrreversibleNeedsTwoApprovals()),
+                Set.of("R1"));
+        RuleEffect e = engine.evaluate(ontology,
+                ctx("service:payment-batch", "alert:cpu", RiskLevel.LOW, true, RuleContext.NO_RUNBOOK));
+
+        assertEquals(List.of("R1"), e.disabledRuleIds());
+        assertEquals(List.of("R-BROKEN"), e.degradedRuleIds());
+        // 关键：两者并存时下限依然被压——停用一条规则不能顺手放过另一条的故障
+        assertEquals(RuleEffect.CONSERVATIVE_MIN_APPROVERS, e.minApprovers());
+        assertTrue(e.degraded());
+    }
+
+    @Test
+    @DisplayName("★ 既被停用又会抛异常的规则记成停用，不记成降级——它根本没执行")
+    void disabledRuleThatWouldThrowIsNeverDegraded() {
+        RuleEngine engine = new RuleEngine(
+                List.of(brokenTighteningRule("R-BROKEN")), Set.of("R-BROKEN"));
+        RuleEffect e = engine.evaluate(ontology,
+                ctx("service:payment-batch", "alert:cpu", RiskLevel.LOW, false, RuleContext.NO_RUNBOOK));
+
+        assertEquals(List.of("R-BROKEN"), e.disabledRuleIds());
+        assertTrue(e.degradedRuleIds().isEmpty(), "跳过发生在求值之前，所以不可能有失败");
+        assertFalse(e.degraded());
+        assertEquals(1, e.minApprovers());
+    }
+
+    @Test
+    @DisplayName("只有停用时 hasEffect 为 false——这是运维明确要的结果，不是漏判")
+    void onlyDisabledMeansNoEffect() {
+        RuleEngine engine = new RuleEngine(
+                List.of(new IrreversibleNeedsTwoApprovals()), Set.of("R1"));
+        RuleEffect e = engine.evaluate(ontology,
+                ctx("service:payment-batch", "alert:cpu", RiskLevel.LOW, true, RuleContext.NO_RUNBOOK));
+
+        assertFalse(e.hasEffect());
+        // 但审计里必须看得出来少了哪条约束
+        assertEquals(1, e.warnings().size());
+        assertTrue(e.warnings().get(0).contains("R1"), e.warnings().get(0));
+        assertTrue(e.warnings().get(0).contains("已被停用"), e.warnings().get(0));
+    }
+
+    @Test
+    @DisplayName("★ 停用列表里的未知 id 必须报出来——拼错就等于那条规则根本没被停用")
+    void unknownDisabledIdIsReported() {
+        RuleEngine engine = new RuleEngine(
+                List.of(new IrreversibleNeedsTwoApprovals()), Set.of("R999"));
+        RuleEffect e = engine.evaluate(ontology,
+                ctx("service:payment-batch", "alert:cpu", RiskLevel.LOW, false, RuleContext.NO_RUNBOOK));
+
+        assertEquals(1, e.warnings().size());
+        String w = e.warnings().get(0);
+        assertTrue(w.contains("R999"), w);
+        assertTrue(w.contains("拼写错误"), w);
+    }
+
+    @Test
+    @DisplayName("空停用集不改变任何行为")
+    void emptyDisabledSetChangesNothing() {
+        RuleEngine engine = new RuleEngine(
+                List.of(new IrreversibleNeedsTwoApprovals()), Set.of());
+        RuleEffect e = engine.evaluate(ontology,
+                ctx("service:payment-batch", "alert:cpu", RiskLevel.LOW, true, RuleContext.NO_RUNBOOK));
+
+        assertTrue(e.disabledRuleIds().isEmpty());
+        assertTrue(e.warnings().isEmpty());
+        assertEquals(2, e.minApprovers());
     }
 }
