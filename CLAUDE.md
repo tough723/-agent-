@@ -93,7 +93,9 @@ ls *.md                                            # 确认文档集完整
 | `oncall-agent-core/src/main/resources/prompts/` | prompt 正文，文件名 `<name>.<version>.md`，**不可原地修改** |
 | `oncall-agent-core/.../query/IntentClassifier.java` | 规则层定安全、LLM 只做路由。**改这里的正则等于改安全边界** |
 | `oncall-eval/src/main/resources/golden-set/` | 人工标注集。**动它等于动判据**，加用例可以，删用例要说明理由 |
-| `oncall-eval/.../ExecuteRecallGate.java` | `EXECUTE` 召回率硬门槛，CI 里唯一的质量门槛 |
+| `oncall-eval/.../ExecuteRecallGate.java` | `EXECUTE` 召回率硬门槛（规则层单独看） |
+| `oncall-eval/.../IntentJudge.java` | 全链路判据：准确率 / 召回率（拆规则侧与模型侧）/ 过度命中 / 降级率。**`false-positive-probe` 组不进准确率分母**，理由写在类注释里，改它之前先读 |
+| `oncall-eval/.../IntentRunRunner.java` | 产出一半，模型无关。**刻意不进 CI**——L3 的非确定性不能进每次 push 的门 |
 | `db/migration/V1__config_governance.sql` | 已落地的 2 张表 |
 | `.github/mvn-test.sh` | CI 失败诊断（annotation 通道） |
 | `.github/workflows/ci.yml` | 模块列表是**硬编码**的，加模块要改这里 |

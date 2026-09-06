@@ -138,7 +138,7 @@ oncall-agent (parent)
 ├── oncall-tool-admin      Spring Web         工具白名单治理的 REST 接入层
 ├── oncall-agent-core      Spring AI          LLM failover / prompt 版本化 / 查询理解
 ├── oncall-ontology        纯 Java，零依赖    轻量本体：概念 / 关系 / 4 条规则
-├── oncall-eval            SnakeYAML          L3 评测：EXECUTE 召回率硬门槛
+├── oncall-eval            SnakeYAML          L3 评测：召回率 + 意图准确率门槛
 └── oncall-archtest        仅测试，无生产代码  架构约束 F1–F4、F9–F12
 ```
 
