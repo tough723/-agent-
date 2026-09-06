@@ -22,7 +22,14 @@ import java.util.Optional;
  * {@link JdbcToolAuditLog} / {@link JdbcToolExecutionLedger} 一致：
  * 生产代码不引入 ORM 或连接池（H2 只在测试作用域）。
  *
- * <p><b>{@link #decide} 靠条件更新而不是先查后写</b>：
+ * <p><b>{@link #decide} 会先读一行做校验，但并发保证仍来自条件更新</b>：
+ * 读出来只为拿到真实的 {@code requester} 去校验「不能自批」——
+ * 这条不变量是跨字段的，凭空构造的探测验不到它。
+ * 真正的并发保证来自 {@code WHERE decision='PENDING'}：
+ * 读与写之间若有人抢先决定，本次 {@code executeUpdate()} 返回 0，
+ * 不会覆盖别人的结论。
+ *
+ * <p>条件更新本身：
  * {@code UPDATE ... WHERE id=? AND decision='PENDING'}。
  * 两个审批人同时点批准时，只有一个的 {@code executeUpdate()} 返回 1，
  * 另一个返回 0 ——这是数据库能给的保证，应用层的
@@ -127,11 +134,26 @@ public final class JdbcApprovalRecordStore implements ApprovalRecordStore {
         if (id == null || outcome == null || !outcome.isFinal()) {
             throw new IllegalArgumentException("id 与终态结论都不能为空，收到：" + outcome);
         }
-        // 先用目标状态构造一条记录，让 ApprovalRecord 的不变量在这里就跑一遍。
-        // 少了这一步，「TIMED_OUT 却带审批人」这类造假要等到读回来才发现。
-        ApprovalRecord probe = new ApprovalRecord(id, ToolAuditContext.of("probe"), "probe",
-                RiskLevel.READ_ONLY, "probe-requester", "{}", outcome, approver, comment,
-                Instant.EPOCH, Instant.EPOCH);
+        // 先读出这一行，再用**它的** requester / requestedAt 去校验目标状态。
+        //
+        // 为什么必须读：ApprovalRecord 的不变量里有两条是**跨字段**的——
+        //   approver <> requester（chk_approval_not_self）
+        //   decidedAt >= requestedAt
+        // 用凭空捏造的 requester 构造探针，只能验到「TIMED_OUT 不该带审批人」
+        // 这类**一元**不变量；自批那一条永远验不出来，因为它要拿真实申请人来比。
+        // 「探针」这个词本身就有误导性：它听起来像能验一切，其实只能验单字段的形状。
+        Optional<ApprovalRecord> current = find(id);
+        if (current.isEmpty()) {
+            return false;      // 记录不存在：本次调用没有完成这次决定
+        }
+        ApprovalRecord base = current.get();
+        Instant decidedAt = Instant.now();
+        // 抛出的 IllegalArgumentException 就是「自批 / TIMED_OUT 带审批人」这类造假信号，
+        // 而且是在写库之前抛的——等 UPDATE 撞数据库 CHECK 约束再抛，
+        // 这个安全信号就混进 SQLException 里了。
+        ApprovalRecord probe = new ApprovalRecord(id, base.context(), base.toolName(),
+                base.riskLevel(), base.requester(), base.argsSnapshot(), outcome, approver,
+                comment, base.requestedAt(), decidedAt);
 
         String sql = "UPDATE " + table
                 + " SET decision=?, approver=?, comment=?, decided_at=?"
@@ -140,7 +162,7 @@ public final class JdbcApprovalRecordStore implements ApprovalRecordStore {
             ps.setString(1, outcome.name());
             setNullable(ps, 2, probe.approver());
             setNullable(ps, 3, probe.comment());
-            ps.setTimestamp(4, Timestamp.from(probe.decidedAt()));
+            ps.setTimestamp(4, Timestamp.from(decidedAt));
             ps.setString(5, id);
             // 返回 0 有两种可能：记录不存在，或已被别人决定。
             // 两种都意味着「本次调用没有完成这次决定」，调用方该做的是重读而不是重试。
