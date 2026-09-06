@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.oncall</groupId>
+    <artifactId>oncall-agent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>oncall-agent-core</artifactId>
+  <name>oncall-agent-core</name>
+
+  <!--
+    AI 编排层。当前只有一件事：把 LLM 调用的可靠性从业务里摘出来。
+
+    为什么先做这一层而不是先做 Planner / IntentClassifier：
+      那些都依赖 LLM，而真模型非确定——进了 CI 就是随机红，
+      红了没人分得清是逻辑坏了还是模型今天不高兴。
+      所以先有 StubChatModel（在 src/test/java），后面每一项才可测。
+      这一层是「前置条件」，不是「其中一项」。
+
+    artifactId 用 oncall-agent-core 而不是 oncall-agent：
+      父 pom 的 artifactId 已经占了 oncall-agent 这个名字，
+      Maven 不允许同一个 groupId 下有两个同 artifactId 的模块。
+
+    刻意只依赖 spring-ai-model，不依赖 oncall-domain / oncall-config：
+      重试与 failover 是传输层的可靠性问题，与领域概念无关。
+      让它保持零内部依赖，任何模块都能拿它去包装自己的 ChatModel。
+      配置项（fallback.model-failover-chain）的读取留给最终的应用模块。
+  -->
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.ai</groupId>
+      <artifactId>spring-ai-model</artifactId>
+    </dependency>
+  </dependencies>
+</project>

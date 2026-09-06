@@ -38,6 +38,7 @@ class ArchitectureRuleTest {
             "com.oncall.config",
             "com.oncall.toolgateway",
             "com.oncall.tooladmin",
+            "com.oncall.agent",
             "com.oncall.ontology"
     };
 
@@ -269,6 +270,44 @@ class ArchitectureRuleTest {
                 "没扫到 ToolPolicyAdminController，F10 的通过是空转的");
         assertTrue(production.contain("com.oncall.tooladmin.ToolAdminExceptionHandler"),
                 "没扫到 ToolAdminExceptionHandler，F10 的通过是空转的");
+    }
+
+    // ------------------------------------------ F11 可靠性层是叶子
+
+    /**
+     * F11：{@code com.oncall.agent.llm} 不得依赖本项目任何其它模块。
+     *
+     * <p><b>为什么范围只圈 {@code .llm} 而不是整个 {@code com.oncall.agent}</b>：
+     * 编排层将来理所当然要依赖 domain 与 toolgateway，
+     * 一条"agent 不得依赖 domain"的规则迟早会被人为了让编译过而删掉。
+     * 圈定 {@code .llm} 才能长期成立——重试与 failover 是<b>传输层的可靠性问题</b>，
+     * 它与"工单""风险等级""白名单"这些领域概念没有任何关系。
+     *
+     * <p>这条约束的收益是具体的：任何模块都能拿 {@code ResilientChatModel}
+     * 去包装自己的 {@code ChatModel}，而不会顺带把 domain / config 拖进依赖图。
+     * 一旦它引了 domain，{@code oncall-agent-core} 就没法被 knowledge 模块单独复用了。
+     */
+    private static final ArchRule F11_LLM_RESILIENCE_IS_A_LEAF =
+            noClasses().that().resideInAnyPackage("com.oncall.agent.llm..")
+                    .should().dependOnClassesThat().resideInAnyPackage(
+                            "com.oncall.domain..", "com.oncall.config..",
+                            "com.oncall.toolgateway..", "com.oncall.tooladmin..",
+                            "com.oncall.ontology..")
+                    .because("LLM 的重试与 failover 是传输层可靠性问题，与领域概念无关；"
+                            + "保持零内部依赖，任何模块才能拿它包装自己的 ChatModel")
+                    .as("F11 LLM 可靠性层不得依赖其它业务模块");
+
+    @Test
+    @DisplayName("F11 通过：LLM 可靠性层是依赖图的叶子")
+    void f11LlmResilienceIsALeaf() {
+        assertRulePasses(F11_LLM_RESILIENCE_IS_A_LEAF, production);
+    }
+
+    @Test
+    @DisplayName("F11 非空转：可靠性层的类确实在扫描范围内")
+    void f11CoversTheResilienceLayer() {
+        assertTrue(production.contain("com.oncall.agent.llm.ResilientChatModel"),
+                "没扫到 ResilientChatModel，F11 的通过是空转的");
     }
 
     // ------------------------------------------------------------ 工具方法

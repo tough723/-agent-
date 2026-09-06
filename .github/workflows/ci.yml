@@ -57,7 +57,7 @@ jobs:
           grep -Eo "org.springframework.ai:[a-z-]+:jar:[0-9][^ :]*" /tmp/spring-ai-tree.txt 2>/dev/null \
             | sort -u | head -8 | sed 's/^/::notice::AI-DEP /' || true
 
-      # 七个模块统一走这个模式：失败时把 [ERROR] 行与失败测试作为 annotation 发出。
+      # 八个模块统一走这个模式：失败时把 [ERROR] 行与失败测试作为 annotation 发出。
       # 原因是 CI 的 job 日志在开发沙箱里取不到（下载接口 SSL 失败），
       # check-run annotation 是唯一可读的输出通道——没有它就等于闭着眼睛改。
       - name: Build & test oncall-domain (纯 Java，零外部依赖)
@@ -72,6 +72,9 @@ jobs:
       - name: Build & test oncall-tool-gateway (依赖 Spring AI)
         run: ./.github/mvn-test.sh oncall-tool-gateway
 
+      - name: Build & test oncall-agent-core (AI 编排：LLM failover 与重试)
+        run: ./.github/mvn-test.sh oncall-agent-core
+
       - name: Build & test oncall-tool-admin (工具白名单治理 REST 接入层)
         run: ./.github/mvn-test.sh oncall-tool-admin
 
@@ -80,7 +83,7 @@ jobs:
 
       # 必须排在最后：F9 要能看到网关以外的代码，它依赖全部模块。
       # 这个模块没有生产代码，只有架构约束测试。
-      - name: Build & test oncall-archtest (架构约束 F1-F4、F9)
+      - name: Build & test oncall-archtest (架构约束 F1-F4、F9-F11)
         run: ./.github/mvn-test.sh oncall-archtest
 
       # ArchUnit 是新引入的依赖，把解析到的版本带出来，

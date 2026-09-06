@@ -57,6 +57,12 @@
       架构测试要看到前面所有模块的字节码。Maven 的 reactor 会自己排序，
       但这里的顺序就是阅读顺序，所以按依赖方向写。
     -->
+    <!--
+      AI 编排层。artifactId 是 oncall-agent-core 而不是 oncall-agent——
+      父 pom 已经占用了 oncall-agent 这个名字，同一 groupId 下不能重名。
+      放在 ontology 之后：archtest 要能看到前面所有模块的字节码。
+    -->
+    <module>oncall-agent-core</module>
     <module>oncall-ontology</module>
     <!-- 无生产代码，只有测试：架构约束（含基石 F9）。必须最后，它依赖全部模块。 -->
     <module>oncall-archtest</module>
