@@ -1,5 +1,7 @@
 package com.oncall.toolgateway;
 
+import com.oncall.domain.trace.TraceId;
+
 import java.util.Objects;
 
 /**
@@ -26,8 +28,14 @@ import java.util.Objects;
  */
 public record ToolAuditContext(String traceId, String runId, String stepId, String operator) {
 
-    /** 与 DDL 的列宽一致：{@code trace_id VARCHAR(64)}。 */
-    public static final int MAX_TRACE_ID = 64;
+    /**
+     * 与 DDL 的列宽一致：{@code trace_id VARCHAR(64)}。
+     *
+     * <p><b>刻意引用 {@link TraceId#MAX_LENGTH} 而不是再写一个 64</b>：
+     * 两处各存一份的话，改列宽时只会改到其中一处，
+     * 而症状是「能构造出对象但 INSERT 失败」——失败点在数据库里，很难往回找。
+     */
+    public static final int MAX_TRACE_ID = TraceId.MAX_LENGTH;
     /** {@code run_id} / {@code step_id} / {@code operator} 同为 {@code VARCHAR(64)}。 */
     public static final int MAX_ID = 64;
 
@@ -35,7 +43,15 @@ public record ToolAuditContext(String traceId, String runId, String stepId, Stri
         // 在构造时就拒绝，而不是等到 INSERT 撞 NOT NULL 约束。
         // 后者的失败点在数据库里，而调用栈早就走远了——审计写不进去的时候，
         // 你看到的是 SQLException，不是「有人没传 traceId」。
-        traceId = requireNonBlank(traceId, "traceId", MAX_TRACE_ID);
+        // 校验委托给 TraceId，而不是在这里再写一遍长度与字符集规则。
+        // 两处各写一份的话，早晚有一份先被改——而 traceId 的规则是安全控制
+        // （防日志注入），不是风格约定，规则分叉的代价很高。
+        String reason = TraceId.rejectionReason(traceId).orElse(null);
+        if (reason != null) {
+            throw new IllegalArgumentException("traceId 不可用：" + reason
+                    + "——审计行没有合法 trace 就无法与 agent_run 关联");
+        }
+        traceId = traceId.trim();
         runId = optional(runId, "runId", MAX_ID);
         stepId = optional(stepId, "stepId", MAX_ID);
         operator = optional(operator, "operator", MAX_ID);
@@ -46,15 +62,48 @@ public record ToolAuditContext(String traceId, String runId, String stepId, Stri
         return new ToolAuditContext(traceId, null, null, null);
     }
 
-    private static String requireNonBlank(String v, String field, int max) {
-        if (v == null || v.isBlank()) {
-            throw new IllegalArgumentException(field + " 不能为空：审计行没有 trace 就无法与 agent_run 关联");
+    /**
+     * 用已铸好的 {@link TraceId} 建上下文。<b>这是首选入口</b>——
+     * 类型本身就说明这个 trace 经过了校验，而 {@code String} 重载说明不了。
+     */
+    public static ToolAuditContext of(TraceId traceId) {
+        if (traceId == null) {
+            throw new IllegalArgumentException("traceId 不能为 null");
         }
-        String t = v.trim();
-        if (t.length() > max) {
-            throw new IllegalArgumentException(field + " 超过 " + max + " 字符：" + t.length());
-        }
-        return t;
+        return new ToolAuditContext(traceId.value(), null, null, null);
+    }
+
+    /**
+     * 启动期上下文：铸一个新 trace。
+     *
+     * <p>用在<b>确实没有上游、也没有 run</b> 的场合——典型是
+     * {@code McpToolRegistrar} 的工具纳管：它发生在任何 run 之前，
+     * 借用某个 run 的 trace 会把「启动时这个 server 挂了」
+     * 记到一次毫不相干的排查名下。
+     *
+     * <p><b>不要拿它当「懒得传 trace」的默认值</b>：
+     * 每次调用都铸一个新的，等于每行审计各自一条 trace，
+     * 而 {@code trace_id} 唯一的用途就是把一次排查的所有操作串起来。
+     */
+    public static ToolAuditContext forStartup() {
+        return of(TraceId.mint());
+    }
+
+    /**
+     * 派生出「同一个 run 的下一步」。
+     *
+     * <p><b>刻意不给 traceId 参数</b>：一次 {@code agent_run} 全程共用一个 trace，
+     * 这条规则如果靠调用方自觉传同一个值，就一定会在某一步被传错，
+     * 而后果是那次排查的记录从中间断成两段——查的时候看不出断过。
+     * 不给参数，就在结构上没法传错。
+     */
+    public ToolAuditContext forStep(String newStepId) {
+        return new ToolAuditContext(traceId, runId, newStepId, operator);
+    }
+
+    /** 派生出「带着 run 的上下文」，同样不接受 traceId。 */
+    public ToolAuditContext forRun(String newRunId) {
+        return new ToolAuditContext(traceId, newRunId, null, operator);
     }
 
     private static String optional(String v, String field, int max) {

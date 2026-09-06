@@ -81,6 +81,29 @@ public final class McpToolRegistrar {
      */
     private final ToolAuditContext registrationContext;
 
+    /**
+     * 装配期工厂：注册上下文由本方法自己铸。
+     *
+     * <p><b>为什么这里可以铸一个新的，而工具调用路径上不可以</b>：
+     * 纳管发生在任何 {@code agent_run} 之前，此时<b>确实没有上游 trace 可采纳</b>。
+     * 而一次 run 之内的每一步都必须沿用同一个 trace——那是
+     * {@code ToolAuditContext.forStep} 刻意不给 traceId 参数的原因。
+     *
+     * <p>整个进程只该在启动时调一次。多次调用会让每次纳管各有一条 trace，
+     * 排查「启动时哪个 server 挂了」时就串不起来。
+     */
+    public static McpToolRegistrar forStartup(McpToolCatalog catalog,
+                                              ToolPolicyEngine policyEngine,
+                                              KillSwitch killSwitch,
+                                              ApprovalGate approvalGate,
+                                              ToolAuditLog auditLog,
+                                              IdempotencyStore idempotencyStore,
+                                              ToolExecutionLedger ledger,
+                                              ArgClamper argClamper) {
+        return new McpToolRegistrar(catalog, policyEngine, killSwitch, approvalGate, auditLog,
+                idempotencyStore, ledger, argClamper, ToolAuditContext.forStartup());
+    }
+
     public McpToolRegistrar(McpToolCatalog catalog,
                             ToolPolicyEngine policyEngine,
                             KillSwitch killSwitch,
