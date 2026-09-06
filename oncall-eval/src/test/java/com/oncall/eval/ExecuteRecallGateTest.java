@@ -158,6 +158,23 @@ class ExecuteRecallGateTest {
     }
 
     @Test
+    @DisplayName("★ cases() 与 groups() 保持 YAML 里的顺序（Map.copyOf 会打乱）")
+    void preservesYamlOrder() {
+        // 这个断言看起来多余，但它钉的是一个真实回归：
+        // byId 原来用 Map.copyOf，迭代顺序是哈希顺序，于是 cases() 的 javadoc
+        // 承诺的「按文件里的顺序」是假的，漏判报告里的排列也变成哈希副产品，
+        // 而任何按顺序写的断言会随机红。PromptRegistry 上踩过同一个坑两次。
+        assertThat(SET.cases()).extracting(IntentCase::id)
+                .containsSubsequence("INT-001", "INT-030", "INT-045", "INT-060")
+                .hasSize(60);
+        assertThat(SET.cases().get(0).id()).isEqualTo("INT-001");
+        assertThat(SET.cases().get(59).id()).isEqualTo("INT-060");
+        // groups() 的 javadoc 承诺「按首次出现顺序」
+        assertThat(SET.groups().get(0)).isEqualTo("execute-explicit");
+        assertThat(SET.groups().get(8)).isEqualTo("false-positive-probe");
+    }
+
+    @Test
     @DisplayName("id 重复 → 装载失败")
     void duplicateIdsAreRejected() {
         assertThatThrownBy(() -> IntentGoldenSet.load("golden-set/intent/duplicate-id.yaml"))

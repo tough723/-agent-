@@ -202,7 +202,7 @@ class IntentRunTest {
     @DisplayName("★ 拒答率越界也不拦：5–25% 那个区间是对生产流量说的，不是对人工挑的集子")
     void refusalRateIsReportedButNeverGated() {
         IntentGoldenSet heavy = IntentGoldenSet.load("golden-set/intent/refusal-heavy.yaml");
-        // 全对，于是拒答率 = 6/10 = 0.60，远在 5–25% 之外
+        // 全对，于是拒答率 = 6/11 = 0.5455（分母是 accuracyDenom，这份 fixture 没有探针组所以等于全部 11 条），远在 5–25% 之外
         IntentRunRecording rec = recording(heavy, IntentRunTest::correct);
 
         IntentJudge.Verdict v = IntentJudge.judge(heavy, rec);

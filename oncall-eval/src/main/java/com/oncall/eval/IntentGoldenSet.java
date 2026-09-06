@@ -28,7 +28,13 @@ public final class IntentGoldenSet {
 
     private IntentGoldenSet(String id, Map<String, IntentCase> byId) {
         this.id = id;
-        this.byId = Map.copyOf(byId);
+        // 不可变，但**必须保序**：Map.copyOf 的迭代顺序不保证，
+        // 而 cases() 与 groups() 的 javadoc 都承诺"按文件里的顺序"。
+        // 顺序一丢，漏判报告里用例的排列就成了哈希顺序的副产品，
+        // 而任何按顺序写的断言都会随机红。
+        // 这是本项目第三次踩 Map.copyOf / Set.copyOf 丢顺序（前两次在
+        // PromptRegistry 的 byName 与 availableVersions），所以已加机械预检。
+        this.byId = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(byId));
     }
 
     /** 从 classpath 装载，例如 {@code golden-set/intent/intent-v1.yaml}。 */
