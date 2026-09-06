@@ -175,9 +175,12 @@ class PromptTemplateTest {
     @DisplayName("多传变量 → 报错（多传通常意味着变量名打错，而打错的名字不会报错，只会悄悄消失）")
     void unexpectedVariableIsRejected() {
         PromptTemplate t = PromptTemplate.of(ID, "{{a}}", "a");
+        // 断言对齐生产代码的实际措辞，并且要求把打错的那个名字报出来——
+        // 只说"多传了"而不说是哪个，等于让人自己去猜。
         assertThatThrownBy(() -> t.render(Map.of("a", "1", "aa", "2")))
                 .isInstanceOf(PromptException.class)
-                .hasMessageContaining("多传了未声明的变量");
+                .hasMessageContaining("多传了未声明的 [aa]")
+                .hasMessageContaining("声明的是 [a]");
     }
 
     @Test
