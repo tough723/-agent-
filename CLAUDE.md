@@ -84,6 +84,7 @@ ls *.md                                            # 确认文档集完整
 |------|------|
 | `oncall-tool-gateway/.../GuardedToolCallback.java` | **基石**：七道关卡。**审计必须覆盖每一个出口**——三条拒绝路径曾因审计调用点全写在「放行之后」而一条都没记 |
 | `oncall-tool-gateway/.../ToolAuditEvent.java` | 一条审计事件 = `tool_audit_log` 的一行。7 个 `NOT NULL` 列全是 record 组件，**构造期就校验**，少一个就构造不出对象 |
+| `oncall-tool-gateway/.../JsonCanonicalizer.java` | 幂等键的唯一输入。键排序 + 数组**保序** + 数字归一。**改它等于改幂等语义**——归一过度会让两个不同操作撞上同一个键（表现为 Agent 说做了但没做），归一不足会导致二次执行 |
 | `oncall-tool-gateway/.../ArgMasker.java` | `args_masked` 的唯一来源。三条性质：绝不抛异常（含 `StackOverflowError`）、宁可多遮、不保留原值长度。**改正则前先读类注释里那两个已知 bug 的成因** |
 | `oncall-config/.../OnCallConfigRegistry.java` | 43 项配置的唯一声明处 |
 | `oncall-config-admin/.../ConfigAdminController.java` | 配置 REST + 双人复核 |
