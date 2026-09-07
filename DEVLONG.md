@@ -538,7 +538,9 @@ DDL 有列，但没人定过它的取值。
    与前三项「必须为正」不同。
    ★ 刻意只做地基不做 `Replanner`：改 record 组件波及 20 个构造点，
    先让 CI 验证地基再在上面建逻辑。
-5. **D3-e —— `Replanner` + `Reporter`**（待做）。
+5. **D3-e —— `Replanner` + `Reporter`** ✅ 已验证（CI run `34090588340`，`839/61/173`）。**M3 编排闭环完成** ——
+   `ReplanOutcome` 把新计划与扣过预算的 run 绑定返回；`Report.Conclusion` 是 `RunStatus` 上的全函数，
+   模型可以写摘要但**不能决定结论**。详见 §1.35。
 
 **M3 剩余**：`Executor` / `Replanner` / `Reporter` 实现文件仍是 **0**；
 `VectorStore` / `EmbeddingModel` / `TextSplitter` 同样是 **0**（M4 的范围）。
