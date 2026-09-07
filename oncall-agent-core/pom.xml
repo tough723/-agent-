@@ -75,5 +75,16 @@
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
     </dependency>
+
+    <!--
+      仅测试作用域：llm_call_log 是 PARTITION BY RANGE 的分区表，
+      用 H2 验证等于赌它的方言兼容性；直接连真实 PostgreSQL 才是诚实的验证。
+      版本由父 pom 的 spring-boot-dependencies BOM 管。
+    -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>

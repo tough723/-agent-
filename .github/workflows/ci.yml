@@ -18,6 +18,26 @@ jobs:
     name: Build & Test (JDK 17)
     runs-on: ubuntu-latest
 
+    # 为什么这个任务也要一个数据库（此前只有 ddl 任务有）：
+    #   llm_call_log / alert_group / alert_event 三张表是 PARTITION BY RANGE，
+    #   而各模块单测用的 H2 未必支持 PostgreSQL 的声明式分区方言。
+    #   与其赌 H2 的兼容性，不如让 Java 测试直接连真实 PostgreSQL——
+    #   这三张表本来每天都在 ddl 任务里建成功。
+    # 用 5433 而不是 5432：两个 job 各自独立的 runner，但端口写清楚便于排查。
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: oncall
+          POSTGRES_DB: oncall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     steps:
       - uses: actions/checkout@v4
 
@@ -72,7 +92,12 @@ jobs:
       - name: Build & test oncall-tool-gateway (依赖 Spring AI)
         run: ./.github/mvn-test.sh oncall-tool-gateway
 
-      - name: Build & test oncall-agent-core (AI 编排：LLM failover 与重试)
+      # ONCALL_TEST_PG_URL 必须设：JdbcLlmCallLogTest 用「变量没设才跳过」的规则，
+      # 设了就必须真的连上——连不上直接失败。
+      # 若写成「连不上就跳过」，服务容器一旦没起来，CI 依然全绿而测试一条没跑。
+      - name: Build & test oncall-agent-core
+        env:
+          ONCALL_TEST_PG_URL: jdbc:postgresql://localhost:5432/oncall?user=postgres&password=oncall
         run: ./.github/mvn-test.sh oncall-agent-core
 
       - name: Build & test oncall-tool-admin (工具白名单治理 REST 接入层)
