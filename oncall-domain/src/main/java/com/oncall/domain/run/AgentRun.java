@@ -42,9 +42,11 @@ public record AgentRun(
         int budgetSteps,
         long budgetTokens,
         BigDecimal budgetCost,
+        int budgetReplans,
         int usedSteps,
         long usedTokens,
         BigDecimal usedCost,
+        int usedReplans,
         Instant createdAt,
         Instant finishedAt) {
 
@@ -72,6 +74,17 @@ public record AgentRun(
         if (budgetSteps <= 0 || budgetTokens <= 0 || budgetCost.signum() <= 0) {
             throw new IllegalArgumentException("预算三项必须全部为正，否则这次排查一步都走不了："
                     + "steps=" + budgetSteps + " tokens=" + budgetTokens + " cost=" + budgetCost);
+        }
+        // ★ 重规划预算刻意允许为 0，与上面三项「必须为正」不同。
+        //   步数/token/成本预算为 0 意味着「一步都走不了」，那是配置错误；
+        //   而重规划预算为 0 意味着「按最初计划一路走到底」，那是一种合法策略。
+        if (budgetReplans < 0 || usedReplans < 0) {
+            throw new IllegalArgumentException("重规划预算与已用次数不得为负："
+                    + "budget=" + budgetReplans + " used=" + usedReplans);
+        }
+        if (usedReplans > budgetReplans) {
+            throw new IllegalArgumentException("已重规划次数越过预算——护栏形同虚设："
+                    + usedReplans + "/" + budgetReplans);
         }
         if (usedSteps < 0 || usedTokens < 0 || usedCost.signum() < 0) {
             throw new IllegalArgumentException("已用量不得为负："
@@ -116,10 +129,10 @@ public record AgentRun(
     public static AgentRun start(String id, TraceId traceId, String alertGroupId,
                                  AutonomyLevel autonomyLevel,
                                  int budgetSteps, long budgetTokens, BigDecimal budgetCost,
-                                 Instant createdAt) {
+                                 int budgetReplans, Instant createdAt) {
         return new AgentRun(id, traceId, alertGroupId, RunStatus.RUNNING, autonomyLevel,
-                0, budgetSteps, budgetTokens, budgetCost,
-                0, 0L, BigDecimal.ZERO, createdAt, null);
+                0, budgetSteps, budgetTokens, budgetCost, budgetReplans,
+                0, 0L, BigDecimal.ZERO, 0, createdAt, null);
     }
 
     /**
@@ -146,9 +159,9 @@ public record AgentRun(
         }
         return new AgentRun(id, traceId, alertGroupId, status, autonomyLevel,
                 stepCursor + stepsDelta,
-                budgetSteps, budgetTokens, budgetCost,
+                budgetSteps, budgetTokens, budgetCost, budgetReplans,
                 usedSteps + stepsDelta, usedTokens + tokensDelta, usedCost.add(costDelta),
-                createdAt, finishedAt);
+                usedReplans, createdAt, finishedAt);
     }
 
     /**
@@ -167,8 +180,41 @@ public record AgentRun(
             throw new IllegalStateException("已经是 " + status + "，不能再次收尾为 " + terminal);
         }
         return new AgentRun(id, traceId, alertGroupId, terminal, autonomyLevel,
-                stepCursor, budgetSteps, budgetTokens, budgetCost,
-                usedSteps, usedTokens, usedCost, createdAt, at);
+                stepCursor, budgetSteps, budgetTokens, budgetCost, budgetReplans,
+                usedSteps, usedTokens, usedCost, usedReplans, createdAt, at);
+    }
+
+    /**
+     * 消耗一次重规划配额，返回新实例。
+     *
+     * <p><b>为什么是独立方法而不是并入 {@link #consume}</b>：
+     * 重规划不消耗步数——它换掉的是<b>剩下要走的步骤</b>，不是走了一步。
+     * 若并入 {@code consume}，调用方就得传 {@code consume(0, tokens, cost)}
+     * 来表达「只重规划、不走步」，那个 0 会被读成「走了 0 步」，
+     * 而游标推进与步数消耗在本类里是刻意绑在一起的。
+     *
+     * @throws IllegalStateException 若本次重规划会越过预算，或已收尾
+     */
+    public AgentRun consumeReplan() {
+        if (status.isTerminal()) {
+            throw new IllegalStateException(
+                    "status=" + status + " 已是终态，不再重规划");
+        }
+        if (usedReplans + 1 > budgetReplans) {
+            // 抛异常而不是静默截断：重规划预算耗尽是一个<b>终止条件</b>，
+            // 调用方必须知道并据此收尾，而不是以为这次重规划生效了。
+            throw new IllegalStateException("重规划预算已耗尽："
+                    + usedReplans + "/" + budgetReplans
+                    + "——这是终止条件，应当收尾而不是继续改主意");
+        }
+        return new AgentRun(id, traceId, alertGroupId, status, autonomyLevel,
+                stepCursor, budgetSteps, budgetTokens, budgetCost, budgetReplans,
+                usedSteps, usedTokens, usedCost, usedReplans + 1, createdAt, finishedAt);
+    }
+
+    /** 重规划配额是否已经用尽。用尽即该收尾，而不是再改一次主意。 */
+    public boolean replanBudgetExhausted() {
+        return usedReplans >= budgetReplans;
     }
 
     /** 三重护栏是否已经用尽。用尽即该收尾，而不是再走一步。 */

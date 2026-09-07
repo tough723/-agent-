@@ -143,7 +143,7 @@ class ExecutorTest {
 
     private static AgentRun run(AutonomyLevel level, int budgetSteps) {
         return AgentRun.start("run-1", TraceId.adopt("oc-trace-1"), "grp-1", level,
-                budgetSteps, 100_000L, new BigDecimal("5.0"), T0);
+                budgetSteps, 100_000L, new BigDecimal("5.0"), 2, T0);
     }
 
     private record Fixture(Executor executor, MemStepStore store, StubTool pods,

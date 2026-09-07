@@ -289,7 +289,7 @@ jobs:
           # 本 job 已经有 7 条 DDL-OK + 1 条幂等，逐条发约束 notice 会被截断——
           # run 33984843271 就只留下了前两条，后两条只能靠「没有 error 所以通过了」
           # 反推。断言通过与否必须是**看得见**的，不能靠 absence 推断。
-          expected="uq_agent_step_idem chk_approval_not_self chk_claim_state tool_execution_claim_pkey"
+          expected="uq_agent_step_idem chk_approval_not_self chk_claim_state tool_execution_claim_pkey chk_agent_run_replan_budget"
           found=""
           for c in $expected; do
             got=$(psql -h localhost -U postgres -d oncall -tAc \

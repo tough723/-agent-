@@ -24,8 +24,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * {@link JdbcAgentRunStore} 对真实 PostgreSQL 的验证。
  *
- * <p>建表用 {@code db/migration/V2__agent_execution.sql} 原文，不在 Java 里复制 DDL——
- * 复制就会与迁移脚本分叉，而分叉是静默的。
+ * <p>建表用 {@code db/migration/} 的迁移脚本原文（V2 建表 + V9 加重规划预算两列），
+ * 不在 Java 里复制 DDL——复制就会与迁移脚本分叉，而分叉是静默的。
+ *
+ * <p><b>两个脚本都必须应用</b>：只应用 V2 的话，V9 加的
+ * {@code budget_replans} / {@code used_replans} 两列不存在，INSERT 会直接失败。
+ * 这类布线点漏了不是「少测一点」，而是整个测试类跑不起来。
  *
  * <p>闸门与 {@code JdbcLlmCallLogTest} 相同：{@code ONCALL_TEST_PG_URL}
  * 一旦设置就必须真的跑，连不上直接失败。该变量挂在 CI 的 <b>job 级</b>，
@@ -39,6 +43,8 @@ class JdbcAgentRunStoreTest {
     private static final Instant T0 = Instant.parse("2026-09-07T03:00:00Z");
 
     private JdbcAgentRunStore store;
+    /** 提为字段是为了让「绕过应用层直接写 SQL」的测试能拿到连接。 */
+    private PGSimpleDataSource dataSource;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -46,24 +52,38 @@ class JdbcAgentRunStoreTest {
         Assumptions.assumeTrue(url != null && !url.isBlank(),
                 "未设置 " + PG_URL_ENV + "，跳过真实数据库验证（本地正常；CI 里必须设置）");
 
-        PGSimpleDataSource ds = new PGSimpleDataSource();
-        ds.setUrl(url);
-        applyMigrationV2(ds);
-        store = new JdbcAgentRunStore(ds);
+        dataSource = new PGSimpleDataSource();
+        dataSource.setUrl(url);
+        applyMigrations(dataSource);
+        store = new JdbcAgentRunStore(dataSource);
     }
 
-    /** V2 里 agent_step 的外键指向 agent_run，所以按子→父顺序 DROP。 */
-    private static void applyMigrationV2(DataSource ds) throws Exception {
-        String ddl = readMigration("db/migration/V2__agent_execution.sql",
-                "../db/migration/V2__agent_execution.sql");
+    /**
+     * 按迁移顺序应用 V2 与 V9。
+     *
+     * <p><b>必须两个都应用</b>：V9 给 agent_run 加了
+     * {@code budget_replans} / {@code used_replans} 两列，
+     * 只应用 V2 的话 INSERT 会因为列不存在而直接失败。
+     * 这类布线点漏了不会「少测一点」，而是整个测试类跑不起来。
+     *
+     * <p>V2 里 agent_step 的外键指向 agent_run，所以按子→父顺序 DROP。
+     */
+    private static void applyMigrations(DataSource ds) throws Exception {
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             st.execute("DROP TABLE IF EXISTS agent_step CASCADE");
             st.execute("DROP TABLE IF EXISTS agent_run CASCADE");
             st.execute("DROP TABLE IF EXISTS tool_audit_log CASCADE");
             st.execute("DROP TABLE IF EXISTS approval_record CASCADE");
-            for (String stmt : ddl.split(";")) {
-                if (!stmt.isBlank()) {
-                    st.execute(stmt);
+        }
+        // 顺序即迁移顺序：V2 建表，V9 加列与约束。
+        for (String file : new String[] {"V2__agent_execution.sql",
+                "V9__agent_run_replan_budget.sql"}) {
+            String ddl = readMigration("db/migration/" + file, "../db/migration/" + file);
+            try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+                for (String stmt : ddl.split(";")) {
+                    if (!stmt.isBlank()) {
+                        st.execute(stmt);
+                    }
                 }
             }
         }
@@ -76,13 +96,13 @@ class JdbcAgentRunStoreTest {
                 return Files.readString(path);
             }
         }
-        throw new IllegalStateException("找不到 V2__agent_execution.sql——"
-                + "本测试必须用迁移脚本原文建表，不接受在 Java 里复制一份 DDL");
+        throw new IllegalStateException("找不到迁移脚本 " + String.join(" / ", candidates)
+                + "——本测试必须用迁移脚本原文建表，不接受在 Java 里复制一份 DDL");
     }
 
     private static AgentRun sample(AutonomyLevel level) {
         return AgentRun.start("run-1", TraceId.adopt("oc-trace-run-1"), "grp-1", level,
-                10, 100_000L, new BigDecimal("5.000000"), T0);
+                10, 100_000L, new BigDecimal("5.000000"), 2, T0);
     }
 
     @Test
@@ -117,8 +137,8 @@ class JdbcAgentRunStoreTest {
         // 之后运维把配置调到 BOUNDED_AUTO，进度更新带着新等级进来。
         AgentRun drifted = new AgentRun("run-1", TraceId.adopt("oc-trace-run-1"), "grp-1",
                 RunStatus.RUNNING, AutonomyLevel.BOUNDED_AUTO,
-                3, 10, 100_000L, new BigDecimal("5.000000"),
-                3, 900L, new BigDecimal("0.420000"), T0, null);
+                3, 10, 100_000L, new BigDecimal("5.000000"), 2,
+                3, 900L, new BigDecimal("0.420000"), 1, T0, null);
         store.update(drifted);
 
         AgentRun back = store.findById("run-1").orElseThrow();
@@ -174,10 +194,52 @@ class JdbcAgentRunStoreTest {
     @DisplayName("alert_group_id 可空，写 SQL NULL 而不是空串")
     void nullableAlertGroupIsWrittenAsNull() {
         store.insert(AgentRun.start("run-2", TraceId.adopt("oc-trace-run-2"), null,
-                AutonomyLevel.ASSIST, 5, 1000L, new BigDecimal("1.000000"), T0));
+                AutonomyLevel.ASSIST, 5, 1000L, new BigDecimal("1.000000"), 2, T0));
 
         AgentRun back = store.findById("run-2").orElseThrow();
         assertThat(back.alertGroupId()).isNull();
         assertThat(back.autonomyLevel()).isEqualTo(AutonomyLevel.ASSIST);
+    }
+
+    // ── V9 的 CHECK 约束：挡住绕过应用层的写入 ──────────────────
+
+    @Test
+    @DisplayName("★ chk_agent_run_replan_budget 挡住绕过应用层的越界写入")
+    void checkConstraintBlocksBypassingWrites() throws Exception {
+        // AgentRun 的构造器已经校验了 used <= budget，所以**通过应用层写不进越界值**。
+        // 这条测试刻意绕过应用层，直接执行 SQL——手工修复脚本、别的语言的客户端
+        // 都是这条路径。没有 CHECK 约束，预算护栏就只挡得住守规矩的调用方，
+        // 而护栏被越过后「重规划预算耗尽」这个终止条件会静默失效。
+        String sql = "INSERT INTO agent_run (id, trace_id, status, autonomy_level,"
+                + " step_cursor, budget_steps, budget_tokens, budget_cost, budget_replans,"
+                + " used_steps, used_tokens, used_cost, used_replans, created_at)"
+                + " VALUES ('bad-1','oc-trace-bad','RUNNING','SHADOW',"
+                + " 0, 10, 1000, 1.0, 2, 0, 0, 0, 5, '2026-09-07 03:00:00')";
+        try (Connection c = dataSource.getConnection(); Statement st = c.createStatement()) {
+            assertThatThrownBy(() -> st.execute(sql))
+                    .as("used_replans=5 > budget_replans=2 必须被数据库拒绝")
+                    .hasMessageContaining("chk_agent_run_replan_budget");
+        }
+        assertThat(store.findById("bad-1")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("★ 重规划预算两列往返；update 会落 used_replans 但不改 budget_replans")
+    void replanBudgetColumnsRoundTrip() {
+        AgentRun run = AgentRun.start("run-rp", TraceId.adopt("oc-trace-rp"), null,
+                AutonomyLevel.BOUNDED_AUTO, 10, 100_000L, new BigDecimal("5.000000"), 3, T0);
+        store.insert(run);
+
+        AgentRun back = store.findById("run-rp").orElseThrow();
+        assertThat(back.budgetReplans()).isEqualTo(3);
+        assertThat(back.usedReplans()).isZero();
+
+        // 重规划两次后落库：used_replans 是进度，必须被 update 写进去
+        AgentRun advanced = run.consumeReplan().consumeReplan();
+        store.update(advanced);
+
+        AgentRun reloaded = store.findById("run-rp").orElseThrow();
+        assertThat(reloaded.usedReplans()).as("worker 崩溃重启后不能归零").isEqualTo(2);
+        assertThat(reloaded.budgetReplans()).as("预算是写入一次的列，不该在跑动中变").isEqualTo(3);
     }
 }
