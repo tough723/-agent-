@@ -295,10 +295,21 @@ class ArchitectureRuleTest {
      *       一旦它引了 domain，加一个 prompt 就要动领域层。</li>
      * </ul>
      *
-     * <p>收益是具体的：{@code oncall-agent-core} 保持零内部依赖，
+     * <p>收益是具体的：这两个叶子包保持零内部依赖，
      * knowledge 模块将来才能拿同一个 {@code ResilientChatModel} 去包装
      * embedding / reranker 的调用，也能拿同一个 {@code PromptRegistry}
      * 管自己的 prompt——而不会顺带把 domain / config 拖进依赖图。
+     *
+     * <p><b>注意「零内部依赖」说的是这两个子包，不是整个模块。</b>
+     * 此处原文曾写作「{@code oncall-agent-core} 保持零内部依赖」，那是假的，
+     * 而且在本条注释写下时就已经不成立：本模块的 pom 早已依赖
+     * {@code oncall-config}（{@code IntentClassifier} 每次调用都要读
+     * {@code query.rewrite-enabled} 与 {@code query.rewrite-min-confidence}），
+     * D2-e 又加了 {@code oncall-domain}（{@code com.oncall.agent.run} 落库
+     * {@code agent_run} 时需要 {@code AutonomyLevel} 快照）。
+     * 本规则的 {@code that()} 子句只圈了这两个子包，所以规则一直是对的；
+     * 错的是这句收益描述——而<b>文档里的假话比代码里的更危险</b>，
+     * 下一个人会照着它以为整个模块都不能碰 domain。
      */
     private static final ArchRule F11_AGENT_FOUNDATIONS_ARE_LEAVES =
             noClasses().that().resideInAnyPackage("com.oncall.agent.llm..", "com.oncall.agent.prompt..")

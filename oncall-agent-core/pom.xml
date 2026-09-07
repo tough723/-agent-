@@ -68,6 +68,19 @@
     </dependency>
 
     <!--
+      com.oncall.agent.run 要落库 agent_run，而那一行的 autonomy_level 列
+      装的是 oncall-domain 的 AutonomyLevel 快照。
+      F11 只把 agent.llm 与 agent.prompt 两个叶子包钉成零内部依赖，
+      它的 javadoc 原文就写着「编排层将来理所当然要依赖 domain 与 toolgateway」——
+      所以这条依赖是设计预留的，不是破例。
+    -->
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-domain</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
       解析模型返回的 JSON。它是 spring-ai-model 的传递依赖，但本模块源码直接
       import，所以显式声明——理由同上面的 spring-core。
     -->
