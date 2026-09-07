@@ -485,7 +485,7 @@ DDL 有列，但没人定过它的取值。
    至此 V2 的两张编排表都有写入方，`uq_agent_step_idem`
    那条「幂等的物理保证」第一次真的被代码撞上。
 
-8. **D2-g —— 新建 `oncall-alert` 模块，告警落库** ⚠️ 修复未经验证
+8. **D2-g —— 新建 `oncall-alert` 模块，告警落库** ✅ 已验证（CI run `34082602362`，`54/762/0`）
    `AlertGroup` + `AlertEvent` + `AlertStatus`（domain）+ `AlertStore` + `JdbcAlertStore`。
    4 个布线点逐个核实（父 pom / ci.yml / archtest 依赖 / PRODUCTION_PACKAGES），
    其中后两个漏了的后果是**静默**的。
@@ -528,7 +528,7 @@ DDL 有列，但没人定过它的取值。
    ★ 顺带修掉 `AutonomyGate` 一处反向判定：原实现把最安全的 `READ_ONLY` 拒了、
    却放行注释说「需二次确认」的 `LOW`；它能活到今天是因为
    **测试夹具里 `READ_ONLY` 出现 0 次**。
-4. **D3-d —— 第四个预算：重规划次数落库** ⚠️ 已提交，未经 CI 验证
+4. **D3-d —— 第四个预算：重规划次数落库** ✅ 已验证（CI run `34089203077`，`814/59/167`）
    `V9` 迁移给 `agent_run` 加 `budget_replans` / `used_replans` 两列
    与 `chk_agent_run_replan_budget` 约束；`AgentRun` 14 → 16 个组件，
    新增 `consumeReplan()` 与 `replanBudgetExhausted()`。
