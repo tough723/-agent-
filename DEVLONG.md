@@ -217,6 +217,9 @@
 | **javadoc 里的「唯一能 X 的方法是 Y」会随实现漂移成假话** | `AlertGroup` 原写「唯一能增加计数的方法是 `absorb`」，而 `absorb` 的真实生产调用点是 0——生产路径上的 `+1` 发生在 `JdbcAlertStore` 的 SQL 里。这句话危险在：读的人会以为计数完整性由领域层保证，实际由 SQL 保证。与 `CallOutcome` 的「刻意不写库」同类（那条在写入方出现后变假，当时散落在 4 个文件里）。**规则：凡是写成「唯一」「只有」「绝不」的断言，改实现时必须回头搜一遍** |
 | **★ 同一个类里两条消息对同一契约用了两种措辞，于是断言落空** | `BasisRef` 的 null 分支写「依据必须**可追溯**」、空白分支写「依据必须**能追溯**到具体出处」。我写断言时脑子里是前一条的措辞，测的却是后一条的路径，CI 红了。生产代码是对的（空白 ref 确实抛了异常）。**修法不是改断言去迁就，而是统一措辞**——同一个类里对同一个契约只用一种说法，否则这是必然复现的陷阱。**规则：写 `hasMessageContaining` 之前，先读那条路径实际抛的那一条消息，不要凭记忆。** |
 | **★★ 我连续造了两个「区分不了任何东西」的检查器，而第二个恰好漏掉了唯一的真问题** | ① 查 javadoc 配对用「裸 `*/` 数 vs 剥注释后 `*/` 数」→ 213 个文件标了 **209** 个（剥注释会把 javadoc 结束符一起删掉，于是每个文件都「剥后=0」）。② 查断言子串是否存在于生产消息，按模块池化所有字符串字面量 → 报 **30** 条，绝大多数是假阳性（插值的数字、测试自己传入的参数、跨模块的值），而**恰好漏掉唯一那条真失败**——因为「可追溯」确实存在于同模块另一条消息里。**结论：这类错误没有可靠的机械检查**，按模块池化会放过它、按类池化也会放过它（同类另一条消息就有）；要抓出来必须知道运行时走哪个分支，那是数据流分析不是 grep。**规则：一个区分不了任何东西的检查器比没有检查更危险——它给出「已检查」的错觉。造检查器之前先问「它会不会把所有东西都标红／它能不能命中一个我已知道答案的样本」。** |
+| **★★ 用正则删代码块，把 292 行的文件削到 89 行——而括号配平预检报「0 异常」** | 模式开头是 `\n    /\*\*\n`，而**文件里第一个 `/**` 是类 javadoc**，懒惰量词一路吃到目标方法结尾，把字段、构造器、主 `classify(String,String)` 全吞了（`git diff`：1 insertion / 204 deletions）。剩下的文件是「package + imports + 几个孤立方法 + 一个 `}`」，每个方法自身括号配平、尾部 `}` 也配平，**所以括号配平检查完全看不出问题**。发现它靠的是顺手打印的行数与记忆对不上。**规则：① 删代码块用行号精确定位 + 花括号配对定终点，不用贪婪/懒惰正则；② 括号配平 ≠ 结构合法，必须另加一条「每个生产文件含 class/record/enum/interface 声明」；③ 改完文件先看行数变化是否符合预期。** |
+| **文档里同一句话被我的替换拼成了重复，且已在远端存在数轮** | D2-f 文档轮我用 `t.replace(锚点, 锚点 + 新内容)` 插入内容，而原文该行后面本来就接着残尾，于是拼出「`AutonomyLevel` 接入调用链 + `AutonomyLevel` 接入调用链」，并让「M2 剩余」在 §10 里出现了两次。直到 D3-b 文档轮顺着读才发现。**规则：用「锚点 + 追加」方式插入时，必须先确认锚点是不是整行——如果锚点只是行的前缀，追加就会与残尾拼接。插入后应当 grep 一次锚点，确认出现次数符合预期。** |
+| **报「报告文件 58」而 CI 实报 57：把「改了 2 个测试文件」当成「新增 2 个测试类」** | 实际只有 `PlannerTest` 是新增（`git diff --name-status` 显示 `A`），`IntentClassifierTest` 是修改（`M`）。与「36/39 项」「四重/三重预算」「五个/六个问题」同源：**报数字之前没有核对口径。规则：数「新增」要用 `--name-status` 的 `A`，不是数匹配到的文件个数。** |
 | **在 F11 的 javadoc 里把「两个子包零内部依赖」写成「整个模块零内部依赖」** | 原文写「收益是具体的：`oncall-agent-core` 保持零内部依赖」。那是假的，而且**写下时就不成立**——该模块 pom 早已依赖 `oncall-config`。**规则本体一直是对的**（`that()` 只圈 `.llm` 与 `.prompt`），错的是收益描述。**教训：写「收益」段落时，受益主体必须与规则的 `that()` 子句逐字对齐**，否则规则会被误读成比它实际管的范围更宽，下一个人就不敢碰 domain 了 |
 ## 7. 环境事实（省得每次重新试）
 
@@ -489,10 +492,11 @@ DDL 有列，但没人定过它的取值。
 
 ### 轨道 E：M3 —— Agent 编排（Plan-Execute-Replan）
 
-**起点实测**：`Planner` / `Executor` / `Replanner` / `Reporter` 实现文件**全是 0**，
-产品核心是空的；但地基已铺好且都过了 CI（`ResilientChatModel` 283 行、
-`PromptRegistry` 262、`PromptTemplate` 236、`AgentRun`/`AgentStep` 及其 Store、
-`RuleEngine`、`IntentClassifier` 292 等 15 个类）。
+**起点实测（D3-a 开工前）**：`Planner` / `Executor` / `Replanner` / `Reporter`
+实现文件**全是 0**，产品核心是空的；但地基已铺好且都过了 CI
+（`ResilientChatModel`、`PromptRegistry`、`PromptTemplate`、
+`AgentRun`/`AgentStep` 及其 Store、`RuleEngine`、`IntentClassifier` 等 15 个类）。
+**这是起点快照，不是现状**——现状见下面各条的 ✅。
 
 **顺序原则：先立确定性防线，再让模型产出。**
 
@@ -501,15 +505,21 @@ DDL 有列，但没人定过它的取值。
    `[写,写,写]` 在第 3 步会被放行而它前面一步信息收集都没有；
    改成数前面真正做了几步只读探查。
    验收断言 `writeOnlyPlanIsRejectedAtTheFirstWriteNotTheThird`。
-2. **D3-b —— `Planner`**（待做）：调 `ResilientChatModel` 产出 `Plan`，
-   输出必须声明每步 `basis`；产出后立刻过 `PlanValidator`。
+2. **D3-b —— `Planner`** ✅
+   调模型产出 `Plan`，**产出即校验**（`validator.validate()` 在 Planner 内部调用，
+   不交给调用方记得）。★ **刻意没有降级分支**：`IntentClassifier` 可以退回规则层，
+   但「一份兜底计划」这种东西不存在——任何固定默认计划都等于
+   「不管什么告警都执行同一套动作」，那比不产出计划危险得多。
+   两个异常刻意分开：`PlanProductionException`（没有计划＝模型可用性问题）
+   与 `PlanRejectedException`（有计划但不许执行＝模型行为问题）。
+   顺带把 `extractJson` 抽成共享的 `ModelOutputJson`（不复制：同一条解析规则
+   写两处必然分叉）。
 3. **D3-c —— `Executor`**（待做）：逐步执行，每步落 `agent_step`，
    预算从 `AgentRun.consume()` 扣；★ 这里才能消掉 `AutonomyGate` 的 0 调用点。
 4. **D3-d —— `Replanner` + `Reporter`**（待做）。
 
-**M2 剩余**：`AutonomyLevel` 接入调用链 + `AutonomyLevel` 接入调用链；
-然后是产品核心 —— `Planner` / `Executor` / `Replanner` / `Reporter`
-**目前文件数都是 0**，`VectorStore` / `EmbeddingModel` / `TextSplitter` 同样是 0。
+**M3 剩余**：`Executor` / `Replanner` / `Reporter` 实现文件仍是 **0**；
+`VectorStore` / `EmbeddingModel` / `TextSplitter` 同样是 **0**（M4 的范围）。
 
 
 **已完成**：
