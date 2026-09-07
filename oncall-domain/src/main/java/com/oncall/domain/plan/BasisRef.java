@@ -17,7 +17,7 @@ public record BasisRef(BasisType type, String ref) {
         Objects.requireNonNull(ref, "ref：依据必须可追溯，不得为 null");
         if (ref.isBlank()) {
             throw new IllegalArgumentException(
-                    "ref 不得为空白——依据必须能追溯到具体出处，否则「有依据」等于没有");
+                    "ref 不得为空白——依据必须可追溯到具体出处，否则「有依据」等于没有");
         }
         // 绝不截断：截断后的 ID 会指向另一条规则或另一份 Runbook。
         if (ref.length() > MAX_REF_LENGTH) {
