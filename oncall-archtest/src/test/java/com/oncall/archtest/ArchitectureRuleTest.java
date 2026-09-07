@@ -41,6 +41,7 @@ class ArchitectureRuleTest {
             "com.oncall.agent",
             "com.oncall.ontology",
             "com.oncall.eval",
+            "com.oncall.alert",
             "com.oncall.app"
     };
 

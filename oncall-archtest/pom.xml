@@ -77,6 +77,16 @@
       少了这一条，importPackages("com.oncall.app") 会扫到零个类，
       而所有 noClasses() 规则在空集合上都是**真**——规则会静默空转通过。
     -->
+    <!--
+      必须列出来：漏了它 ArchUnit 扫不到 com.oncall.alert 的任何字节码，
+      noClasses() 规则会因为「集合为空」而全部通过——那是一次静默的空转。
+    -->
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-alert</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
     <dependency>
       <groupId>com.oncall</groupId>
       <artifactId>oncall-app</artifactId>

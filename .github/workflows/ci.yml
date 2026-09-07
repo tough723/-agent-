@@ -127,6 +127,9 @@ jobs:
         run: ./.github/mvn-test.sh oncall-app
 
       # 必须排在最后：F9 要能看到网关以外的代码，它依赖全部模块。
+      - name: Build & test oncall-alert
+        run: ./.github/mvn-test.sh oncall-alert
+
       # 这个模块没有生产代码，只有架构约束测试。
       - name: Build & test oncall-archtest (架构约束 F1-F4、F9-F12)
         run: ./.github/mvn-test.sh oncall-archtest

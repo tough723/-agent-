@@ -74,6 +74,11 @@
       它站在依赖图最顶端（要同时引 tool-gateway 等），
       而 archtest 必须能看到它的字节码——否则新增的生产包会被架构测试静默跳过。
     -->
+    <!--
+      告警接入与聚合。放在 eval 之后、app 之前：它只依赖 domain，
+      而 archtest 要能看到它的字节码。
+    -->
+    <module>oncall-alert</module>
     <module>oncall-app</module>
     <!-- 无生产代码，只有测试：架构约束（含基石 F9）。必须最后，它依赖全部模块。 -->
     <module>oncall-archtest</module>
