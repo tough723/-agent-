@@ -24,8 +24,8 @@ import java.util.Objects;
  * 所以 {@code JdbcAgentRunStore} 的 UPDATE 语句<b>刻意不含这一列</b>，
  * 并由测试直接钉住。
  *
- * <h2>② 预算三重护栏不允许被越过</h2>
- * <p>步数 / token / 成本三项，{@code used} 一旦超过 {@code budget} 就是构造失败。
+ * <h2>② 四项预算护栏不允许被越过</h2>
+ * <p>步数 / token / 成本 / 重规划次数四项，{@code used} 一旦超过 {@code budget} 就是构造失败。
  * 若允许越界，护栏就只是记录而不是护栏。
  *
  * <h2>③ {@code finished_at} 与终态互为充要</h2>
@@ -90,7 +90,8 @@ public record AgentRun(
             throw new IllegalArgumentException("已用量不得为负："
                     + "steps=" + usedSteps + " tokens=" + usedTokens + " cost=" + usedCost);
         }
-        // ★ 三重护栏。用 compareTo 而不是 equals：NUMERIC(12,6) 下 0.1 与 0.10 相等但不 equals。
+        // ★ 步数/token/成本三项护栏（重规划次数的护栏在下面单独一条）。
+        //   用 compareTo 而不是 equals：NUMERIC(12,6) 下 0.1 与 0.10 相等但不 equals。
         if (usedSteps > budgetSteps || usedTokens > budgetTokens
                 || usedCost.compareTo(budgetCost) > 0) {
             throw new IllegalArgumentException("已用量越过预算——护栏形同虚设："
@@ -122,7 +123,7 @@ public record AgentRun(
     }
 
     /**
-     * 开一次新排查：游标与三项用量都从 0 起，状态 RUNNING，未完成。
+     * 开一次新排查：游标与四项用量都从 0 起，状态 RUNNING，未完成。
      *
      * @param autonomyLevel 开跑那一刻的放权等级，此后固定不变
      */
@@ -165,7 +166,7 @@ public record AgentRun(
     }
 
     /**
-     * 收尾。放权等级快照、traceId、三项预算与 createdAt 原样带过去——
+     * 收尾。放权等级快照、traceId、四项预算与 createdAt 原样带过去——
      * 它们是<b>写入一次</b>的列，收尾不该动它们。
      *
      * @param terminal 必须是终态
@@ -217,7 +218,14 @@ public record AgentRun(
         return usedReplans >= budgetReplans;
     }
 
-    /** 三重护栏是否已经用尽。用尽即该收尾，而不是再走一步。 */
+    /**
+     * 步数 / token / 成本三项护栏是否已经用尽。用尽即该收尾，而不是再走一步。
+     *
+     * <p><b>刻意不含重规划次数</b>：那是第四个独立计数器，由
+     * {@link #replanBudgetExhausted()} 单独判。合并成一个布尔会让
+     * 「排查太长」与「反复改主意」在调用方眼里变成同一件事，
+     * 而它们的处置方式不同（前者调步数预算，后者查 prompt）。
+     */
     public boolean budgetExhausted() {
         return usedSteps >= budgetSteps
                 || usedTokens >= budgetTokens

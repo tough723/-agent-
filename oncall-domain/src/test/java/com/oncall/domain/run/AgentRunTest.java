@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * {@link AgentRun} 的构造期不变量。纯领域测试，不碰数据库。
  */
-@DisplayName("AgentRun：预算三重护栏与放权快照")
+@DisplayName("AgentRun：四项预算护栏与放权快照")
 class AgentRunTest {
 
     private static final Instant T0 = Instant.parse("2026-09-07T03:00:00Z");
@@ -25,7 +25,7 @@ class AgentRunTest {
     }
 
     @Test
-    @DisplayName("start() 产出 RUNNING、游标 0、三项用量归零、未完成")
+    @DisplayName("start() 产出 RUNNING、游标 0、四项用量归零、未完成")
     void startProducesAFreshRun() {
         AgentRun run = running();
         assertThat(run.status()).isEqualTo(RunStatus.RUNNING);

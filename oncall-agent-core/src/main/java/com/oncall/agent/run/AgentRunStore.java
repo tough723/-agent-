@@ -13,8 +13,8 @@ import java.util.Optional;
  * 两者都要，所以先立端口。
  *
  * <h2>{@link #update} 的一条硬约束</h2>
- * <p>它只推进<b>进度</b>：状态、游标、三项用量、完成时刻。
- * {@code autonomy_level}、{@code trace_id}、三项预算与 {@code created_at}
+ * <p>它只推进<b>进度</b>：状态、游标、四项用量、完成时刻。
+ * {@code autonomy_level}、{@code trace_id}、四项预算与 {@code created_at}
  * 是<b>写入一次</b>的列，{@code update} 不允许碰它们。
  *
  * <p>其中 {@code autonomy_level} 尤其要紧：它是 RUNTIME_HOT 配置，

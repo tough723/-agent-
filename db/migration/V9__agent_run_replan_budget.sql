@@ -26,6 +26,12 @@ ALTER TABLE agent_run
     ADD COLUMN IF NOT EXISTS budget_replans INT NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS used_replans  INT NOT NULL DEFAULT 0;
 
+-- V2 的表注释写的是「预算三重护栏（步数/token/成本）」。
+-- **不改 V2**——已应用的迁移不可编辑，改了会让「迁移脚本是不可变历史」这条前提失效。
+-- 由本脚本追加 COMMENT 覆盖，这也正是 COMMENT ON 幂等的原因。
+COMMENT ON TABLE agent_run IS
+  '一次排查的全过程；预算四重护栏（步数/token/成本/重规划次数）';
+
 COMMENT ON COLUMN agent_run.budget_replans IS
   '本次排查允许的重规划次数上限；0 表示不允许重规划（合法策略，不是配置错误——'
   '与前三项预算必须为正刻意不同）';

@@ -38,7 +38,7 @@ public final class JdbcAgentRunStore implements AgentRunStore {
             """;
 
     /**
-     * ★ 只有六个占位符，因为这是<b>进度</b>更新。
+     * ★ 只有八个占位符（七列进度 + {@code id}），因为这是<b>进度</b>更新。
      *
      * <p>{@code autonomy_level} 刻意不在其中：它是放权等级快照，
      * 写进去就会被当前配置覆盖掉当时的授权，且不报错。
