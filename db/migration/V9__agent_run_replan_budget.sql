@@ -42,6 +42,18 @@ COMMENT ON COLUMN agent_run.used_replans   IS
 --
 -- 这与 V2 给 approval_record 加 chk_approval_not_self 是同一条原则：
 -- 责任/预算这类不变量必须有物理保证，不能只靠应用层自觉。
+--
+-- ★ 为什么先 DROP 再 ADD：PostgreSQL 的 ADD CONSTRAINT **没有 IF NOT EXISTS**，
+--   而 ci.yml 的「Verify idempotency re-run」这一步会把所有迁移脚本
+--   用 ON_ERROR_STOP=1 再跑一遍——直接 ADD 第二次必然报
+--   「constraint already exists」，整个 DDL job 就红了。
+--
+--   刻意不用 DO $$ ... $$ 块来查 pg_constraint：本项目的
+--   JdbcAgentRunStoreTest 是用 ddl.split(";") 逐条执行迁移原文的，
+--   而 DO 块体内含分号，会被切成碎片。DROP IF EXISTS + ADD 是两条
+--   干净语句，既幂等又不破坏那个测试的执行方式。
+ALTER TABLE agent_run
+    DROP CONSTRAINT IF EXISTS chk_agent_run_replan_budget;
 ALTER TABLE agent_run
     ADD CONSTRAINT chk_agent_run_replan_budget
     CHECK (budget_replans >= 0 AND used_replans >= 0 AND used_replans <= budget_replans);
