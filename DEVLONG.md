@@ -174,7 +174,7 @@
 | **`IntentGoldenSet` 用 `Map.copyOf` 装用例，javadoc 却承诺「按文件里的顺序」** | CI 第一次红就红在这里：`misclassified` 反序返回。`Map.copyOf` 的迭代顺序不保证，所以那两个承诺（`cases()` 与 `groups()`）一直是假的。这是本项目**第三次**踩 `Map`/`Set.copyOf` 丢顺序（前两次在 `PromptRegistry`）。已改成 `unmodifiableMap(new LinkedHashMap<>(...))` + 一条钉住顺序的用例 + 一道机械预检（`Map`/`Set.copyOf` 出现处若上文承诺了顺序就报出来）。**教训不是「记住这一条」——同一类错犯了三次，说明要的是检查，不是记忆** |
 | **审计调用点全写在「放行之后」，于是三条拒绝路径一条都没记** | ① 未注册工具被默认拒绝、② kill switch 拦下、④ 幂等抢占失败，三处都直接让异常穿出去，`tool_audit_log` 里没有任何痕迹。而 ① 是工具投毒的第一道防线、② 是只读模式下拦截写操作——**最该被记录的安全事件反而是唯一没被记录的**。这不是漏写某一处，而是审计调用的**位置**错了。**规则：审计要覆盖每一个出口，尤其是拒绝出口——把审计写在 throw 之前，而不是只写在成功分支里** |
 | **列名叫 `args_masked`，存的是未脱敏原文** | 列名说谎是审计里最难发现的一类问题：读代码的人看到 `args_masked` 就假定已经脱敏了，于是审计表可以放心给更多人查——而它其实是密钥的第二个副本，且保留 180 天。**规则：列名与字段名是一个断言，改语义时必须回头核对真正存进去的东西** |
-| **`catch (RuntimeException)` 让「绝不抛异常」的契约变成假话** | `java.util.regex` 对 `(a|b)*` 是每重复一次递归一层，一段一万六千字符的参数就 `StackOverflowError`——而它是 `Error` 不是 `RuntimeException`，所以根本没被接住，CI 上真的炸了。**规则：承诺「不抛异常」时要问抛出来的是不是 `Error`；正则里避免 `(a|b)*`，改用 unrolled 形式 `a*(ba*)*`** |
+| **`catch (RuntimeException)` 让「绝不抛异常」的契约变成假话** | `java.util.regex` 对 `(a\|b)*` 是每重复一次递归一层，一段一万六千字符的参数就 `StackOverflowError`——而它是 `Error` 不是 `RuntimeException`，所以根本没被接住，CI 上真的炸了。**规则：承诺「不抛异常」时要问抛出来的是不是 `Error`；正则里避免 `(a\|b)*`，改用 unrolled 形式 `a*(ba*)*`** |
 | **往 Java 源码里手写字符串转义，连着两次都写错** | 第一次用 Python 逐行替换正则，在 Python 字符串里多套一层反斜杠，写进文件的 `\"` 变成 `\\"`，Java 直接编译不过；第二次改 unrolled 时又手写一遍转义，`count=0` 匹配失败。改成「先写目标正则本身 → `java_lit()` 生成字面量 → `unjava()` 反向解码断言还原」之后才稳。**规则：凡往源码里写字面量，一律程序化生成 + 反向解码校验** |
 | **我的机械预检抓不到 Java 语法错** | 未使用 import、CJK 断言字面量那套预检全是文本级的，编译错误只能到 CI 才炸（本地没有 javac）。本轮推了三次才绿，前两次都是这种错。**规则：能程序化验证的就程序化验证——正则可编译、字面量可往返、断言值能从源码解出来；别指望肉眼过一遍 Java 语法** |
 | **javadoc 写着「key 排序」，实现只去空白——而现有测试恰好测不到** | `canonical()` 的注释承诺了排序，代码只有 `replaceAll("\\s+","")`。于是 `{"a":1,"b":2}` 与 `{"b":2,"a":1}` 算出两个幂等键，**幂等静默失效，后果是二次扩容、二次重启**。而 `whitespaceDifferenceDoesNotBreakIdempotency` 这条名字完全对题的测试只覆盖空白差异——空白正是旧实现唯一处理对了的部分。**规则：一条测试守的是「已经成立的性质」还是「可能被破坏的性质」，要问它在新实现下会不会红；不会红的测试不提供任何保证** |
@@ -206,11 +206,8 @@
 | **绝不能拿 `head` 截断的 grep 输出去断言「0 个 / 没有 / 全部」** | 我跑 `grep ... \| head -6` 然后断言「`ApprovalGate` 生产实现数 = 0」。`grep -r` 的**文件遍历顺序不保证稳定**：那一轮唯一的实现 `PollingApprovalGate.java` 排在第 7 位被截掉，重跑同一条命令它排在第 5 位就露出来了。**规则：① 全称否定命题（「0 个」「没有」「全部」）必须由未被截断的完整输出支撑；② 数实现数只能数 `class .* implements X`，不能数「提到过这个接口名的行」；③ `head` 是用来看样本的，不是用来下结论的** |
 | **假结论会顺着文档扩散，改的时候要全仓搜** | 那句「实现数为 0」当时被写进了 4 个地方：`ToolGatewayAssembly` 的 javadoc、`DEVELOPMENT.md` §1.24、`DEVLONG.md` §6、`CLAUDE.md` 关键文件表。改代码只修了 1 处。**规则：更正一个结论时，先 `grep -rn` 那句话的关键片段，把它写进过的每一处都改掉；留在文档里的假话比留在代码里的更危险，因为下一个人会照着它做决定** |
 | **一个「新模块会不会重演已知坑」的问题，要用现有模块的现状去核实，不要靠推理** | 本项目踩过 surefire 2.12.4 对 JUnit 5 跑 0 个测试却报绿。我担心新模块重演，于是量了 8 个现有模块的 pom——**全部不声明 `<build>` 段**，都靠父 pom `pluginManagement` 的 3.2.5 继承，所以新模块同样继承，风险不存在。**规则：判断「新东西会不会踩旧坑」，先看旧东西现在是怎么躲开的** |
-
-
-
----
-
+| **CI 全绿，但测试一条都没跑（跳过=5）** | D2-d 那轮统计是 `失败=0 错误=0 跳过=5`，而那 5 条正是 `JdbcLlmCallLogTest` 的全部用例——`llm_call_log` 的第一次落库验证一条没执行，CI 却是绿的。根因：`ONCALL_TEST_PG_URL` 被我挂在 agent-core **那一步**上，而命令是 `mvn -pl <模块> -am test`，`-am` 会重跑上游模块的测试并**覆盖**其 `surefire-reports`；排在后面的 `oncall-eval`(:114) 与 `oncall-archtest`(:124) 都依赖 agent-core 且没有这个变量，最后覆盖报告的正是「跳过」的那两次。**闸门没坏，是装错了地方。** 修法：变量提到 **job 级**，并给统计步骤加「跳过 > 0 即 `exit 1`」硬闸。**两条教训：①「测试通过」与「测试执行了」是两件事，CI 必须分别拦——一个只数 failures/errors 的统计步骤会把「没跑」当成「过了」；② 给单个 step 注入的环境变量会被后续 `-am` 重跑冲掉，需要全任务生效的东西必须挂 job 级。** 详见 [DEVELOPMENT.md](DEVELOPMENT.md) §1.26 |
+| **在 `ci.yml` 注释里写了一句与配置相反的假话** | 注释写「用 5433 而不是 5432」，而下面的映射其实是 `5432:5432`。同轮改掉。**文档里的假话比代码里的更危险：下一个人会照着它去排查一个不存在的问题。** |
 ## 7. 环境事实（省得每次重新试）
 
 | 事项 | 结论 |
@@ -419,6 +416,43 @@
    `CONFIGURE` 本该转出对话通道走配置 API。
    要区分就得让规则层认识配置键的形状（`xxx.yyy`），这还没做。
    LLM 的分类结果是**路由**，不是**安全**；`EXECUTE` 召回率必须是 1.0 硬门槛。
+
+
+### 轨道 D：把已经建好的防线接上调用链（M2）
+
+> **这条轨道消除的不是新功能缺口，而是「声明存在，实现缺席」。**
+> 到 D 轨道开始前，`ArgClamper` 的生产实现数、`@SpringBootApplication` 数、
+> `llm_call_log` 的写入方数**都是 0** —— 接口、javadoc、DDL 全都写好了，
+> 但没有任何生产代码真的会走到它们。
+
+1. **D1 —— `argClamper == null` 启动即失败** ✅
+   `GuardedToolCallback` 与 `McpToolRegistrar` 两处。此前传 `null` 会静默退化成
+   `ArgClamper.NOOP`，也就是**不夹紧**。与同一个构造器里 `ledger` 的判空同一条原则：
+   装配缺件必须吵闹。
+
+2. **D2-a —— 新建 `oncall-app` 装配层** ✅
+   `JsonScaleArgsAdapter` 的**生产构造点从 0 变成 1**。
+   `scaleReplicasClamper` 把「解析层 → 算术层」的结构写死：
+   `ScaleReplicasClamper` **不实现** `ArgClamper`，所以「直接把它传进去」编译不过。
+
+3. **D2-b —— `ToolGatewayAssembly.guardedToolCallback`** ✅
+   接收**原料**（存储 / 端口），在内部构造**策略**（`PollingApprovalGate` + 夹紧链），
+   于是调用方没有机会忘掉其中任何一个。
+   验收断言：模型生成 `replicas:999`，委托方实际收到 `replicas:7`。
+
+4. **D2-c —— `OnCallApplication` + `ToolGatewayConfiguration`** ✅
+   **项目第一次能被启动**（此前 137 个生产类没有一个有入口点）。
+   只要 `spring-boot-starter`，不要 `-web` / `-data-jpa`。
+
+5. **D2-d —— `llm_call_log` 第一次有写入方** ✅
+   `LlmCallRecord` + `LlmCallLog` + `JdbcLlmCallLog`。
+   **全仓唯一连真实 PostgreSQL 的测试**（这张表是 `PARTITION BY RANGE`）。
+   这一轮同时暴露并修掉了一次假绿：CI 全绿而 5 条测试一条没跑，见 §6。
+
+**M2 剩余**：`agent_step` 落库 + `AutonomyLevel` 接入调用链；
+然后是产品核心 —— `Planner` / `Executor` / `Replanner` / `Reporter`
+**目前文件数都是 0**，`VectorStore` / `EmbeddingModel` / `TextSplitter` 同样是 0。
+
 
 **已完成**：
 
