@@ -541,9 +541,50 @@ DDL 有列，但没人定过它的取值。
 5. **D3-e —— `Replanner` + `Reporter`** ✅ 已验证（CI run `34090588340`，`839/61/173`）。**M3 编排闭环完成** ——
    `ReplanOutcome` 把新计划与扣过预算的 run 绑定返回；`Report.Conclusion` 是 `RunStatus` 上的全函数，
    模型可以写摘要但**不能决定结论**。详见 §1.35。
+   > ⚠️ **本条「M3 编排闭环完成」的说法被 D3-f 推翻了**：四个类各自全绿，
+   > 但串起来必炸——重规划在结构上进不了循环。见下条。
+6. **D3-f —— 让重规划真的能进循环** ✅ 已验证（CI run `34096955745`，`855/62/175`）。
+   修掉两个结构性缺陷：
+   - `Executor.execute()` 两条返回路径都 `finish(...)`，所以 `ExecutionResult.run()`
+     **必定是终态**；而 `consumeReplan()` 对任何终态抛异常，`AgentRun` 也没有
+     任何方法能从终态回到 `RUNNING` ⇒ **`Replanner` 永远拿不到能用的 run**。
+     改为 `resumeForReplan()`：要求终态，只有 `FAILED`/`ABORTED` 可恢复，并清空 `finishedAt`。
+   - `stepId = runId:seq`，重规划后新计划的 `seq` 也从 1 开始 ⇒ 撞主键 ⇒
+     `tryInsert` 返回 false ⇒ `continue` ⇒ **新计划前几步凭空消失**。
+     `uq_agent_step_idem` 是另一条唯一约束，**只改主键等于没修**，两条都按「第几代计划」换代。
 
-**M3 剩余**：`Executor` / `Replanner` / `Reporter` 实现文件仍是 **0**；
-`VectorStore` / `EmbeddingModel` / `TextSplitter` 同样是 **0**（M4 的范围）。
+   ★ 最值得记的一点：**每个单元测试都还是绿的**，因为 `ReplannerTest` 喂的是
+   手工构造的 RUNNING run，不是 `Executor` 的真实输出。
+   **夹具选的是什么，覆盖的就是什么；夹具绕开了集成点，集成点就没有覆盖。**
+   详见 §1.37。
+
+**M3 剩余**（★ 本段原写「`Executor`/`Replanner`/`Reporter` 实现文件仍是 0」，
+已过期并订正——三者在 D3-c/d/e 就已实现，实测 260/177/141 行，
+生产引用 5/4/3 个）：
+
+- **仍然没有编排器**。按文件名找 `*Orchestrat*`/`*Pipeline*`/`*AgentLoop*`/
+  `*RunDriver*`/`*Supervisor*` 全部为空；同时引用四个 M3 组件的生产类**一个都没有**
+  （最多 3/4，是 `Replanner` 自己）。`StateGraph` 生产引用 **0**。
+  ⇒ 四个类都在、都能测，但**没有任何东西把它们串成一次真实排查**。
+- `VectorStore` / `EmbeddingModel` / `TextSplitter` 提及数 **0**（M4 的范围）。
+
+### 轨道 F：让「人能改的开关」真的有读取方（本体与规则持久化）
+
+1. **D4-a —— `onto_rule` 落库：`RuleRegistry` + `JdbcRuleRegistry`** ✅
+   已验证（CI run `34091728339`，`854/62/175`）。
+   三条不可让步的语义：**缺行 = 启用**（R1–R4 都是收紧约束，安全默认必须是「在生效」）；
+   `setEnabled` 对未知 id 抛 `IllegalArgumentException` 且**绝不自动插入**
+   （自动插入会让打错的 id 看起来像「成功关掉了」）；
+   `recordHits` **不碰 `updated_at`**（否则「这条规则三个月前被关掉了」会被每次命中覆盖）。
+   刻意的不对称：`setEnabled` 抛、`recordHits` 静默忽略——同样是「未知 id」，
+   处理方式相反，**因为后果量级不同**。`syncKnownRules` 从不写 `enabled`，
+   否则一条被刻意关掉的规则会在每次重启时复活。详见 §1.36。
+
+   > ⚠️ **诚实记录**：`JdbcOntologyStore` 与 `RuleEngine` 本身都没有生产构造点，
+   > `oncall-app` 只装配了 `ToolGatewayConfiguration` 的三个 `@Bean`，
+   > 所以 `JdbcRuleRegistry` 也没有生产构造点。**这是既有状态，不是本轮引入的**，
+   > 但它意味着「`onto_rule` 落库」指的是「有了可用的写入方实现并通过真实 H2 验证」，
+   > 而**不是**「已在运行时被调用」。
 
 
 **已完成**：
