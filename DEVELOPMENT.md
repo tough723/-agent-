@@ -2557,12 +2557,30 @@ C5 建好的那道夹紧防线一行都没接上。缺的不是实现，是**有
                     （解析 + 改树）          （纯算术 + 拒绝）
 ```
 
-#### 刻意不做的部分
+#### ~~刻意不做的部分~~ —— 这一节的理由是错的，见下方更正
 
-**不构造 `GuardedToolCallback`。** 那需要一个 `ApprovalGate`，
-而它的生产实现数此刻是 **0**（M1 剩余项 `WecomApprovalGate`）。
-现在硬造一个假实现来「把装配做完」，只会得到一个只有测试用的接缝——
-那正是轨道 C3 批评过的东西。**宁可这一步只做能做完的部分。**
+> ~~**不构造 `GuardedToolCallback`。** 那需要一个 `ApprovalGate`，
+> 而它的生产实现数此刻是 **0**（M1 剩余项 `WecomApprovalGate`）。~~
+
+**更正（轨道 D2-b）：`ApprovalGate` 的生产实现数是 1，不是 0。**
+`PollingApprovalGate` 一直是它的生产实现（轮询 `approval_record`，超时写 `TIMED_OUT`）。
+
+错因很具体，值得单独记：我当时跑的是
+
+```
+grep -rn "implements ApprovalGate\|ApprovalGate " oncall-*/src/main | grep -v "^.*://" | head -6
+```
+
+`grep -r` 的**文件遍历顺序不保证稳定**。那一轮 `PollingApprovalGate.java` 排在
+`McpToolRegistrar.java` 之后，被 `head -6` 截掉了；重跑同一条命令它排在第 5 位，就露出来了。
+
+> **我用一个被 `head` 截断的样本，断言了一个全称否定命题（「0 个实现」）。**
+> 这与本项目已记录的「数实现数要数 `class .* implements X`」是同一条纪律，
+> 而我恰恰没照做——我数的是「包含 `ApprovalGate ` 的行」，那不是实现数。
+
+`WecomApprovalGate` 仍是 M1 剩余项，但它是**通知渠道**那一层
+（企微卡片 + 超时升级），不是闸门本体。文档 `:1972` 本来就写对了：
+「事实来源是数据库，企微只是催人的手段」。
 
 #### 三处接线（漏任何一处，新模块都会被静默跳过）
 

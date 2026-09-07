@@ -49,5 +49,16 @@
       <artifactId>oncall-domain</artifactId>
       <version>${project.version}</version>
     </dependency>
+
+    <!--
+      ToolCallback 出现在本模块源码的 import 里，所以显式声明。
+      tool-gateway 已经传递带入了它，但按 oncall-tool-admin 里写下的同一条规矩：
+      传递依赖不是契约——哪天 tool-gateway 换了内部结构，
+      这里就会在没有改动本模块的情况下编译失败。
+    -->
+    <dependency>
+      <groupId>org.springframework.ai</groupId>
+      <artifactId>spring-ai-model</artifactId>
+    </dependency>
   </dependencies>
 </project>
