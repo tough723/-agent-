@@ -244,11 +244,13 @@
 
 ---
 
-## 9. 还没解决的五个问题
+## 9. 还没解决的六个问题
 
 前三个不解决，M4 之后会卡住。**不是技术问题，是信息缺口。**
 第四个是实现 MCP 纳管时暴露出来的**治理缺口**；
 第五个是做幂等账本时对着 V2 的 DDL 查出来的**接口与表结构不匹配**。
+第六个是 D2-f 做 `agent_step` 落库时发现的**规范缺口**：
+DDL 有列，但没人定过它的取值。
 
 | 问题 | 影响 | 需要什么 |
 |------|------|---------|
@@ -257,6 +259,8 @@
 | **成本模型的真实聚合率** | 现在的 15% 是**假设值**，成本承诺全是空的 | W3 用真实数据修正 |
 | **工具白名单（`ToolPolicy`）没有变更治理路径**（🟡 进行中） | 白名单是整个安全模型的事实来源——加一条 MCP 工具策略就等于放行一个远端工具。但配置治理那套（可见性分级 / 双人复核 / 待复核单 / 审计）只覆盖 `OnCallConfigRegistry`，**不覆盖 `ToolPolicyEngine`**。现在加策略是改代码或改 DB，没有第二人复核，也没有"谁在什么时候放行了什么"的可查记录 | 把工具策略纳入与配置同等的治理：变更走待复核单 + 双人 + 审计。这一条的优先级高于任何新功能。**A1 已完成**：双人复核的决策核心（`TwoPersonReview` + `Operator`）已从 `oncall-config-admin` 下沉到 `oncall-domain`，两侧共用一份规则（§1.6）。**A2 已完成**：`ToolPolicyGovernance` 落地，工具策略变更走待复核单 + 双人 + 审计，判据是 `PolicyRiskDelta` 算出的风险方向（§1.7）。**A4 已完成**：`register()/revoke()` 降为包级可见，治理层成为唯一入口（§1.8）。**A3 也已完成**：`oncall-tool-admin` 提供 REST 接入点（8 类 / 25 用例），四种拒绝映射到 410/403/409/409 四个状态码（§1.9）。**轨道 A 全部收口**，实测 398 用例 / 27 报告文件 / 99 生产类 |
 | ~~**`ToolAuditLog` 的方法签名喂不满 `tool_audit_log` 的必填列**~~ **✅ 已解决（轨道 C1，DEVELOPMENT §1.15）** | V2 的 `tool_audit_log` 要求 `trace_id` / `tool_source` / `risk_level` / `args_masked` / `gate_outcome` 全部 `NOT NULL`，而 `recordSuccess(idempotencyKey, toolName, args, result)` **一个都给不出**：没有 trace，分不清 LOCAL 与 MCP，没有风险级，`gate_outcome` 只能靠方法名反推（`recordClamped` 与 `recordApproval` 之间还分不清 `PASSED` / `CLAMPED`），`args` 还是未脱敏原文而列名叫 `args_masked`。⇒ **`JdbcToolAuditLog` 现在写不出来**；硬写只能往必填列塞假值，而一张字段造假的审计表比没有审计更糟 | 已按这个方向做完：`ToolAuditContext` + `ToolAuditEvent` 把上下文显式传入，7 个必填列全变成 record 组件并在构造期校验。**解决过程中查出两条此前没记的事**：① `traceId` 在生产代码里零命中，不只是「签名没传」；② **三条拒绝路径完全没有审计**（① 默认拒绝、② kill switch、④ 幂等抢占失败）——因为所有审计调用点都写在「放行之后」。**遗留**：~~`approval_record` 仍无 JDBC 实现~~（✅ C3，§1.17）；~~`traceId` 有了入口但还没有真正的产出方~~（✅ C4，§1.18：`TraceId` 就是产出方，且「一次 run 全程同一个 trace」由 `forStep`/`forRun` 不接受 traceId 参数来保证，不再依赖编排层自觉） |
+
+| **`agent_step.status` 没有取值规范** | DDL 里既无列注释也无 CHECK 约束（`agent_run.status` 有五个值的注释），设计文档也没枚举。`StepStatus` 目前只收了能从列结构推导出的三个值（`RUNNING`/`SUCCEEDED`/`FAILED`），**数据库仍然什么值都收** | 产品需要回答：**被审批闸门拒掉的一步，算不算「一步」？** 若算，要加 `SKIPPED`/`DENIED` 并**同时给 V2 补 CHECK 约束**——只改枚举不改约束，数据库照样收脏值 |
 
 > 第四条是这么被发现的：我本来加了一个 `mcp.allowed-servers` 配置项并把它放进
 > 高危清单，以为这样就"加 server 要两人同意"了。但那管的是**连接**，
@@ -457,7 +461,14 @@
    ★ 技术要点是**快照 write-once**：`UPDATE_SQL` 刻意不含 `autonomy_level`，
    否则每次进度更新都会用当前配置覆盖「当时的」授权且不报错。
 
-**M2 剩余**：`agent_step` 落库 + `AutonomyLevel` 接入调用链；
+7. **D2-f —— `agent_step` 第一次有写入方** ✅
+   `AgentStep` + `StepStatus`（domain）+ `AgentStepStore` + `JdbcAgentStepStore`。
+   ★ `tryInsert` 返回布尔而非抛异常：多实例下「别人已经抢到了」是预期行为，
+   必须与真故障可区分（用 SQLSTATE `23505`，不用异常消息文本）。
+   至此 V2 的两张编排表都有写入方，`uq_agent_step_idem`
+   那条「幂等的物理保证」第一次真的被代码撞上。
+
+**M2 剩余**：`AutonomyLevel` 接入调用链 + `AutonomyLevel` 接入调用链；
 然后是产品核心 —— `Planner` / `Executor` / `Replanner` / `Reporter`
 **目前文件数都是 0**，`VectorStore` / `EmbeddingModel` / `TextSplitter` 同样是 0。
 
