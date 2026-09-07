@@ -60,5 +60,19 @@
       <groupId>org.springframework.ai</groupId>
       <artifactId>spring-ai-model</artifactId>
     </dependency>
+
+    <!--
+      装配层需要容器：@SpringBootApplication 与 @Configuration 都在这里。
+      刻意只要 spring-boot-starter，不要 -web / -data-jpa：
+        · 本模块目前不提供 HTTP 端点，REST 绑定在 config-admin / tool-admin；
+        · 引入 -data-jpa 会让容器自动装配 DataSource，
+          而现在还没有生产数据源配置，那会让上下文启动失败在一个
+          与「装配逻辑对不对」毫无关系的地方。
+      版本由父 pom 的 spring-boot-dependencies BOM 管，这里不写版本号。
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+    </dependency>
   </dependencies>
 </project>
