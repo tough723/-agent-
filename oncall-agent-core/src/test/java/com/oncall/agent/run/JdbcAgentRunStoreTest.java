@@ -12,8 +12,6 @@ import org.postgresql.ds.PGSimpleDataSource;
 
 import javax.sql.DataSource;
 import java.math.BigDecimal;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.time.Instant;
@@ -76,29 +74,10 @@ class JdbcAgentRunStoreTest {
             st.execute("DROP TABLE IF EXISTS approval_record CASCADE");
         }
         // 顺序即迁移顺序：V2 建表，V9 加列与约束。
-        for (String file : new String[] {"V2__agent_execution.sql",
-                "V9__agent_run_replan_budget.sql"}) {
-            String ddl = readMigration("db/migration/" + file, "../db/migration/" + file);
-            try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
-                for (String stmt : ddl.split(";")) {
-                    if (!stmt.isBlank()) {
-                        st.execute(stmt);
-                    }
-                }
-            }
-        }
+        // 切分交给 MigrationSql——裸 split(";") 会被注释里的分号切碎，见该类的类注释。
+        MigrationSql.apply(ds, "V2__agent_execution.sql", "V9__agent_run_replan_budget.sql");
     }
 
-    private static String readMigration(String... candidates) throws Exception {
-        for (String p : candidates) {
-            Path path = Path.of(p);
-            if (Files.exists(path)) {
-                return Files.readString(path);
-            }
-        }
-        throw new IllegalStateException("找不到迁移脚本 " + String.join(" / ", candidates)
-                + "——本测试必须用迁移脚本原文建表，不接受在 Java 里复制一份 DDL");
-    }
 
     private static AgentRun sample(AutonomyLevel level) {
         return AgentRun.start("run-1", TraceId.adopt("oc-trace-run-1"), "grp-1", level,

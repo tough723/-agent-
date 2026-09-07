@@ -54,22 +54,22 @@ class JdbcAgentStepStoreTest {
      * 当前不会失败（本类的 INSERT 显式列出列名，而 V9 的新列有 DEFAULT 0），
      * 但那是运气不是设计。让两个类应用同一组迁移，schema 就与执行顺序无关。
      */
+    /**
+     * DROP 后按迁移顺序应用 V2 与 V9。
+     *
+     * <p><b>为什么这个类也要应用 V9</b>：它与 {@code JdbcAgentRunStoreTest}
+     * 共用同一个 PostgreSQL，而两者都会 DROP 并重建 {@code agent_run}。
+     * 若只有那个类应用 V9，这张表的 schema 就<b>取决于哪个类最后跑</b>。
+     *
+     * <p><b>切分交给 {@link MigrationSql}</b>：裸 {@code split(";")} 会被
+     * 注释里的分号切碎，见该类的类注释。
+     */
     private static void applyMigrations(DataSource ds) throws Exception {
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             st.execute("DROP TABLE IF EXISTS agent_step CASCADE");
             st.execute("DROP TABLE IF EXISTS agent_run CASCADE");
         }
-        for (String file : new String[] {"V2__agent_execution.sql",
-                "V9__agent_run_replan_budget.sql"}) {
-            String ddl = readMigration("db/migration/" + file, "../db/migration/" + file);
-            try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
-                for (String stmt : ddl.split(";")) {
-                    if (!stmt.isBlank()) {
-                        st.execute(stmt);
-                    }
-                }
-            }
-        }
+        MigrationSql.apply(ds, "V2__agent_execution.sql", "V9__agent_run_replan_budget.sql");
     }
 
     /** agent_step.run_id 外键指向 agent_run(id)，必须先有父行。 */
@@ -83,16 +83,6 @@ class JdbcAgentStepStoreTest {
         }
     }
 
-    /** 从候选路径里找到并读取迁移脚本原文（不在 Java 里复制 DDL）。 */
-    private static String readMigration(String... candidates) throws Exception {
-        for (String p : candidates) {
-            if (java.nio.file.Files.exists(java.nio.file.Path.of(p))) {
-                return java.nio.file.Files.readString(java.nio.file.Path.of(p));
-            }
-        }
-        throw new IllegalStateException("找不到迁移脚本 " + String.join(" / ", candidates)
-                + "——本测试必须用迁移脚本原文建表，不接受在 Java 里复制一份 DDL");
-    }
 
     private static AgentStep step(String id, int seq, String idemKey) {
         return AgentStep.start(id, "run-1", seq, "scale_replicas",
