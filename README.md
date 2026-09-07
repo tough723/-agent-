@@ -16,7 +16,7 @@
 | 分支 | `arena/01a06d8c-agent` |
 | CI | GitHub Actions，JDK 17 temurin + Maven 3.9.16 |
 | 测试 | **365 个用例 / 25 个测试类，全通过**（CI run `33986641697`） |
-| 已落地模块 | `oncall-domain`、`oncall-config`、`oncall-config-admin`、`oncall-tool-gateway`、`oncall-tool-admin`、`oncall-agent-core`、`oncall-ontology`、`oncall-eval`、`oncall-archtest`（仅测试） |
+| 已落地模块 | `oncall-domain`、`oncall-config`、`oncall-config-admin`、`oncall-tool-gateway`、`oncall-tool-admin`、`oncall-agent-core`、`oncall-ontology`、`oncall-eval`、`oncall-app`、`oncall-archtest`（仅测试） |
 | 数据库 | 15 张表的 DDL 已写入 `db/migration/`，**全部在真实 PostgreSQL 16 + pgvector 上执行通过（含重复执行）** |
 | 阶段 | M1 完成，M1.5 完成，M2 起 |
 
@@ -139,11 +139,15 @@ oncall-agent (parent)
 ├── oncall-agent-core      Spring AI          LLM failover / prompt 版本化 / 查询理解
 ├── oncall-ontology        纯 Java，零依赖    轻量本体：概念 / 关系 / 4 条规则
 ├── oncall-eval            SnakeYAML          L3 评测：召回率 + 意图准确率门槛
+├── oncall-app             Spring Boot        装配层：@SpringBootApplication + @Configuration
 └── oncall-archtest        仅测试，无生产代码  架构约束 F1–F4、F9–F12
 ```
 
 > 这棵树在 `oncall-tool-admin` 与 `oncall-agent-core` 落地后一度没有跟着更新，
-> 是在补 `oncall-eval` 时才发现的。**模块清单这类东西必须和 pom 一起改**，
+> 是在补 `oncall-eval` 时才发现的。**同一类错后来又犯了一次**：
+> `oncall-app` 在 D2-a 建好，直到 D2-e 的文档轮预检才被查出来——**隔了四轮**。
+> 第一次的教训只写进了文档，没有变成检查，所以它照样重演。
+> **模块清单这类东西必须和 pom 一起改**，
 > 否则读文档的人会按一张少两个模块的图去理解依赖方向。
 
 依赖方向严格单向（已核实的边：`config-admin → config`、`tool-gateway → domain`、
