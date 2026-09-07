@@ -18,12 +18,22 @@ jobs:
     name: Build & Test (JDK 17)
     runs-on: ubuntu-latest
 
+    env:
+      ONCALL_TEST_PG_URL: jdbc:postgresql://localhost:5432/oncall?user=postgres&password=oncall
+
     # 为什么这个任务也要一个数据库（此前只有 ddl 任务有）：
     #   llm_call_log / alert_group / alert_event 三张表是 PARTITION BY RANGE，
     #   而各模块单测用的 H2 未必支持 PostgreSQL 的声明式分区方言。
     #   与其赌 H2 的兼容性，不如让 Java 测试直接连真实 PostgreSQL——
     #   这三张表本来每天都在 ddl 任务里建成功。
-    # 用 5433 而不是 5432：两个 job 各自独立的 runner，但端口写清楚便于排查。
+    # 端口是 5432:5432。两个 job 各自跑在独立 runner 上，所以同名端口不冲突。
+    #
+    # ★ ONCALL_TEST_PG_URL 必须挂在 job 级，不能挂在 agent-core 那一步上：
+    #   本任务的命令是 mvn -pl <模块> -am test，-am 会把上游模块的测试
+    #   一并重跑并覆盖其 surefire-reports。oncall-eval 与 oncall-archtest
+    #   都依赖 oncall-agent-core，且排在它之后——
+    #   变量若只给 agent-core 那一步，最后覆盖报告的会是「没设变量」的那两次，
+    #   于是 5 条数据库测试全部跳过而 CI 依然全绿。上一轮实测就是这样。
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -96,8 +106,6 @@ jobs:
       # 设了就必须真的连上——连不上直接失败。
       # 若写成「连不上就跳过」，服务容器一旦没起来，CI 依然全绿而测试一条没跑。
       - name: Build & test oncall-agent-core
-        env:
-          ONCALL_TEST_PG_URL: jdbc:postgresql://localhost:5432/oncall?user=postgres&password=oncall
         run: ./.github/mvn-test.sh oncall-agent-core
 
       - name: Build & test oncall-tool-admin (工具白名单治理 REST 接入层)
@@ -173,7 +181,21 @@ jobs:
             echo "::error::存在失败或错误的测试：failures=$failures errors=$errors"
             exit 1
           fi
-          echo "✅ $total 个测试全部执行且通过"
+          # ★ 跳过也必须为 0，否则这一栏绿得没有意义。
+          #   这道闸是上一轮补的：D2-d 那轮 CI 全绿、失败=0 错误=0，
+          #   但「跳过=5」——JdbcLlmCallLogTest 的 5 条数据库测试一条没跑。
+          #   原因是 mvn -pl <模块> -am test 会把上游模块的测试重跑并
+          #   覆盖 surefire-reports，而 ONCALL_TEST_PG_URL 当时只挂在
+          #   agent-core 那一步上；排在它后面的 oncall-eval / oncall-archtest
+          #   两次重跑没有这个变量，最后覆盖报告的正是「跳过」的那两次。
+          #   全仓目前只有这一个测试用 assumeTrue，@Disabled 为 0，
+          #   所以这道闸不会误伤；今后要新增会被跳过的测试，
+          #   必须先说明它为什么可以跳过，再改这里。
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::有 $skipped 个测试被跳过：跳过不是通过。请检查被跳过的测试是否真的该跳"
+            exit 1
+          fi
+          echo "✅ $total 个测试全部执行且通过（无跳过）"
 
       - name: Upload surefire reports
         if: always()
