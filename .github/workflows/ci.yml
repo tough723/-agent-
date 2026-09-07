@@ -254,15 +254,28 @@ jobs:
           PGPASSWORD: oncall
         run: |
           fail=0
+          ok=""
+          nok=0
           for f in $(ls db/migration/V*.sql | sort -V); do
             echo "===== $f ====="
             if psql -h localhost -U postgres -d oncall -v ON_ERROR_STOP=1 -f "$f"; then
-              echo "::notice::DDL-OK $f"
+              # ★ 刻意不在循环里逐条发 notice。
+              #   GitHub 对单个 check run 每个级别最多保留 10 条 annotation，
+              #   而本 job 还要发 DDL-表数 / DDL-约束 / DDL-幂等 三条断言结果。
+              #   脚本数已经涨到 9 个，逐条发就是 9+3=12 条，**超出上限 2 条**，
+              #   被截断的恰好是最后那两条断言——也就是判断 DDL 是否通过的依据。
+              #   （这个坑 ci.yml 下面第 288 行的注释早就记过：run 33984843271
+              #     只留下了前两条，后两条只能靠「没有 error」反推。）
+              #   所以聚合成一条：脚本数继续涨也不会再顶到上限。
+              ok="$ok $(basename "$f" .sql | cut -c1-2)"
+              nok=$((nok+1))
             else
+              # 失败仍然逐条发 error：失败是少数，且必须能定位到具体脚本。
               echo "::error::DDL-FAIL $f 执行失败"
               fail=1
             fi
           done
+          echo "::notice::DDL-OK $nok 个脚本全部执行成功:$ok"
           echo "===== 建表结果 ====="
           psql -h localhost -U postgres -d oncall -c \
             "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name"
