@@ -160,7 +160,7 @@ class ExecutorTest {
         tools.put(WRITE, scale);
         KillSwitch ks = new KillSwitch();
         ks.set(mode);
-        Executor ex = new Executor(engine(), tools::get, store, ks,
+        Executor ex = new Executor(engine(), n -> Optional.ofNullable(tools.get(n)), store, ks,
                 (runId, step, toolName, args) -> runId + "|" + step + "|" + toolName,
                 whitelist, FIXED);
         return new Fixture(ex, store, pods, logs, scale, ks);
@@ -266,7 +266,8 @@ class ExecutorTest {
         MemStepStore store = new MemStepStore();
         StubTool bad = new StubTool(READ_PODS, null, new IllegalStateException("K8s API 403"));
         Map<String, ToolCallback> tools = Map.of(READ_PODS, bad);
-        Executor ex = new Executor(engine(), tools::get, store, new KillSwitch(),
+        Executor ex = new Executor(engine(), n -> Optional.ofNullable(tools.get(n)), store,
+                new KillSwitch(),
                 (a, b, c, d) -> a + "|" + b, Set.of(READ_PODS), FIXED);
 
         ExecutionResult r = ex.execute(run(AutonomyLevel.BOUNDED_AUTO, 10),
