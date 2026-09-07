@@ -223,6 +223,10 @@
 | **★★ 一个 CI 全绿、有 7 条测试的类，判定逻辑是反的——因为夹具缺了最关键的那一档** | `AutonomyGate` 原写 `policy.risk() != RiskLevel.LOW → 拒绝`，于是 `READ_ONLY`（注释：「Agent 可直接调用」）被拒，而 `LOW`（注释：「需二次确认」）反而放行——与两个枚举值的注释都相反，也与本类 javadoc 里「HIGH 永远要审批」的原意不符。**它能活到今天是因为 `AutonomyGateTest` 里 `READ_ONLY` 出现 0 次**：夹具只有 `LOW` 与 `HIGH`，7 条测试全绿，却没有一条覆盖被拒错的那一档。**规则：① 测试通过只说明它测的那些输入是对的，夹具的选择本身就是覆盖范围；② 对「按枚举分支」的判定，必须每个枚举值都有一条断言——已补 `riskLevelsBehaveAsDocumented` 把三级并排列出来；③ 判定逻辑与它引用的枚举注释矛盾时，以注释为准去查代码，不要反过来改注释。** |
 | **预检核实了方法签名存在，却没发现调用点类型不兼容（编译错误）** | `ToolResolver.resolve` 返回 `Optional<ToolCallback>`，我传的是 `tools::get`，而 `Map::get` 返回 `ToolCallback` 本身——`incompatible types: bad return type in method reference`，`testCompile` 直接失败，那一轮 0 条测试被执行。**规则：签名存在 ≠ 调用点类型兼容。**这是「预检抓不到 Java 语义错误」的又一实例，而且是最基础的一类（不是泛型推断的边角，是 `Optional` 忘了包）。**修的时候不要只改 CI 点名的行**：全文件 4 处传该接口的实参逐个核对了返回类型，并全仓搜了 `::get` 其余 4 处确认不是同类问题——只修被点名的两处，下一轮很可能在别处再红。 |
 | **在 F11 的 javadoc 里把「两个子包零内部依赖」写成「整个模块零内部依赖」** | 原文写「收益是具体的：`oncall-agent-core` 保持零内部依赖」。那是假的，而且**写下时就不成立**——该模块 pom 早已依赖 `oncall-config`。**规则本体一直是对的**（`that()` 只圈 `.llm` 与 `.prompt`），错的是收益描述。**教训：写「收益」段落时，受益主体必须与规则的 `that()` 子句逐字对齐**，否则规则会被误读成比它实际管的范围更宽，下一个人就不敢碰 domain 了 |
+| **★ 给既有表追加约束时忘了 CI 会把迁移脚本再跑一遍** | `ci.yml` 有一步 `Verify idempotency re-run`，用 `ON_ERROR_STOP=1` 把所有迁移脚本**再执行一次**。而 V9 原本写的是裸 `ALTER TABLE ... ADD CONSTRAINT`——**PostgreSQL 的 `ADD CONSTRAINT` 没有 `IF NOT EXISTS`**，第二次必然报 `constraint already exists`。全仓没有先例可循：V7 的约束是 `CREATE TABLE` 里的**内联**约束，靠 `CREATE TABLE IF NOT EXISTS` 天然幂等，而给既有表**追加**约束走不到那条路。**规则：写迁移脚本前先问「这个仓库会不会重复执行它」，再决定用哪种幂等写法。** |
+| **两种都正确的幂等写法里，只有一种兼容既有约束** | 标准写法是 `DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_constraint ...) END $$`。但本项目的 `JdbcAgentRunStoreTest` 是用 `ddl.split(";")` 逐条执行迁移原文的，而 `DO` 块体内含分号会被切成碎片。改用 `DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT` 两条干净语句。**选错的那种在本地和 DDL job 里都不会报错，只会在测试里炸**——所以「哪种写法对」取决于仓库里已有的执行方式，不是取决于哪种更标准。 |
+| **幂等性是脚本级性质，不是单语句性质——我的检查器逐条判断报了假阳性** | 我写的幂等核对脚本把第 5 条 `ADD CONSTRAINT` 标成「幂等=否」，但它前面紧跟第 4 条 `DROP CONSTRAINT IF EXISTS`，**成对**执行才幂等。**规则：判断幂等要看整段脚本重复执行的结果，不能逐条孤立判断。**已复核 DROP 与 ADD 同名且 DROP 在前。 |
+| **一个结论变了，散落的表述不会自己跟着变** | D3-d 把预算从三项变成四项，全仓搜出 **22 处**「三重/三项预算」。**没有一把替换**——逐处读原文后分四类：①刻意正确（`AgentRun:75`「预算三项必须为正」正是在与「重规划预算可为 0」作对比，一把替换会抹掉这层对比反而制造新误导）②已应用的迁移（`V2:36` 表注释**不能改**，改已应用的迁移会让「迁移脚本是不可变历史」失效，应由新脚本追加 `COMMENT ON` 覆盖）③设计文档（是输入不是活文档）④活文档 8 处（改）。**规则：结论变更必须全仓搜，但搜到之后要逐处判定，批量替换本身就是一种不读原文。** |
 ## 7. 环境事实（省得每次重新试）
 
 | 事项 | 结论 |
@@ -524,7 +528,17 @@ DDL 有列，但没人定过它的取值。
    ★ 顺带修掉 `AutonomyGate` 一处反向判定：原实现把最安全的 `READ_ONLY` 拒了、
    却放行注释说「需二次确认」的 `LOW`；它能活到今天是因为
    **测试夹具里 `READ_ONLY` 出现 0 次**。
-4. **D3-d —— `Replanner` + `Reporter`**（待做）。
+4. **D3-d —— 第四个预算：重规划次数落库** ⚠️ 已提交，未经 CI 验证
+   `V9` 迁移给 `agent_run` 加 `budget_replans` / `used_replans` 两列
+   与 `chk_agent_run_replan_budget` 约束；`AgentRun` 14 → 16 个组件，
+   新增 `consumeReplan()` 与 `replanBudgetExhausted()`。
+   **没有这一列，「重规划预算耗尽」这个终止条件根本无法实现**——
+   循环可以无限改主意而每一步看起来都合法。
+   ★ 重规划预算**刻意允许为 0**（「按最初计划一路走到底」是合法策略），
+   与前三项「必须为正」不同。
+   ★ 刻意只做地基不做 `Replanner`：改 record 组件波及 20 个构造点，
+   先让 CI 验证地基再在上面建逻辑。
+5. **D3-e —— `Replanner` + `Reporter`**（待做）。
 
 **M3 剩余**：`Executor` / `Replanner` / `Reporter` 实现文件仍是 **0**；
 `VectorStore` / `EmbeddingModel` / `TextSplitter` 同样是 **0**（M4 的范围）。
