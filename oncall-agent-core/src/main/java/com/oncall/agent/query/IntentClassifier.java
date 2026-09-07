@@ -2,6 +2,7 @@ package com.oncall.agent.query;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.oncall.agent.llm.ModelOutputJson;
 import com.oncall.agent.prompt.PromptRegistry;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -150,7 +151,7 @@ public final class IntentClassifier {
 
         JsonNode root;
         try {
-            root = MAPPER.readTree(extractJson(raw));
+            root = MAPPER.readTree(ModelOutputJson.extract(raw));
         } catch (RuntimeException | java.io.IOException e) {
             return fallback(ruleHit, question, rendered.version(),
                     "模型输出无法解析为 JSON：" + e.getClass().getSimpleName());
@@ -221,38 +222,6 @@ public final class IntentClassifier {
         return QueryUnderstanding.degraded(
                 ruleHit ? Intent.EXECUTE : Intent.OUT_OF_SCOPE,
                 ruleHit, question, promptVersion, reason);
-    }
-
-    /**
-     * 从模型输出里取出 JSON 对象。
-     *
-     * <p>模型经常无视"只输出 JSON"的指令，在外面包一层
-     * <code>```json</code> 围栏，或者加一句"好的，以下是结果："。
-     * 直接 {@code readTree} 会整段失败，然后走进降级分支——
-     * 于是一次本来可用的回答被拒了，而日志里只写"无法解析"。
-     * 所以这里先剥围栏、再取第一个 {@code &#123;} 到最后一个 {@code &#125;}。
-     *
-     * <p>这是个启发式，不是解析器。它会在"输出里有多段 JSON"时取错，
-     * 但那种输出本身就是坏的，取哪一段都不对。
-     */
-    static String extractJson(String raw) {
-        String text = raw.trim();
-        if (text.startsWith("```")) {
-            int firstBreak = text.indexOf('\n');
-            if (firstBreak > 0) {
-                text = text.substring(firstBreak + 1);
-            }
-            int fence = text.lastIndexOf("```");
-            if (fence >= 0) {
-                text = text.substring(0, fence);
-            }
-        }
-        int open = text.indexOf('{');
-        int close = text.lastIndexOf('}');
-        if (open < 0 || close <= open) {
-            return text;
-        }
-        return text.substring(open, close + 1);
     }
 
     /**

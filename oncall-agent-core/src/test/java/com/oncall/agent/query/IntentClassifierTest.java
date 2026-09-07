@@ -2,6 +2,7 @@ package com.oncall.agent.query;
 
 import com.oncall.agent.llm.StubChatModel;
 import com.oncall.agent.prompt.ActiveVersionSource;
+import com.oncall.agent.llm.ModelOutputJson;
 import com.oncall.agent.prompt.PromptRegistry;
 import com.oncall.config.ConfigService;
 import com.oncall.config.InMemoryConfigAuditLog;
@@ -344,12 +345,12 @@ class IntentClassifierTest {
     }
 
     @Test
-    @DisplayName("extractJson：剥围栏、取首个 { 到末个 }")
-    void extractJsonHandlesTheCommonWrappings() {
-        assertThat(IntentClassifier.extractJson("```json\n{\"a\":1}\n```")).isEqualTo("{\"a\":1}");
-        assertThat(IntentClassifier.extractJson("结果：{\"a\":1} 以上")).isEqualTo("{\"a\":1}");
-        assertThat(IntentClassifier.extractJson("{\"a\":1}")).isEqualTo("{\"a\":1}");
-        assertThat(IntentClassifier.extractJson("完全没有 JSON"))
+    @DisplayName("ModelOutputJson.extract：剥围栏、取首个 { 到末个 }")
+    void modelOutputJsonHandlesTheCommonWrappings() {
+        assertThat(ModelOutputJson.extract("```json\n{\"a\":1}\n```")).isEqualTo("{\"a\":1}");
+        assertThat(ModelOutputJson.extract("结果：{\"a\":1} 以上")).isEqualTo("{\"a\":1}");
+        assertThat(ModelOutputJson.extract("{\"a\":1}")).isEqualTo("{\"a\":1}");
+        assertThat(ModelOutputJson.extract("完全没有 JSON"))
                 .as("没有花括号时原样返回，让上层去报「无法解析」")
                 .isEqualTo("完全没有 JSON");
     }
