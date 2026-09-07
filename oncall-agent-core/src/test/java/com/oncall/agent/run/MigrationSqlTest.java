@@ -48,7 +48,7 @@ class MigrationSqlTest {
         List<String> stmts = MigrationSql.statements(ddl);
         assertThat(stmts).hasSize(1);
         for (String s : stmts) {
-            assertThat(s.count(ch -> ch == '"')).as("语句里不应有未闭合的双引号: %s", s).isZero();
+            assertThat(count(s, '"')).as("语句里不应有未闭合的双引号: %s", s).isZero();
         }
     }
 
@@ -78,6 +78,11 @@ class MigrationSqlTest {
                 .allSatisfy(s -> assertThat(s).isNotBlank());
     }
 
+    /** 数一个字符出现的次数。{@code String} 没有 {@code count(Predicate)}，得走 IntStream。 */
+    private static long count(String s, char target) {
+        return s.chars().filter(c -> c == target).count();
+    }
+
     /**
      * ★ 对<b>仓库里真实的 9 个迁移脚本</b>断言切分结果，不只是断言手写的样例。
      *
@@ -99,10 +104,10 @@ class MigrationSqlTest {
         assertThat(scripts).hasSize(9);
         for (Path p : scripts) {
             for (String stmt : MigrationSql.statements(Files.readString(p))) {
-                assertThat(stmt.count(ch -> ch == '"'))
+                assertThat(count(stmt, '"'))
                         .as("%s 切出的片段有未闭合的双引号: %s", p.getFileName(), stmt)
                         .isZero();
-                assertThat(stmt.count(ch -> ch == '\''))
+                assertThat(count(stmt, '\''))
                         .as("%s 切出的片段有未闭合的单引号: %s", p.getFileName(), stmt)
                         .isZero();
             }
