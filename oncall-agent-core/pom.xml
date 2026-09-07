@@ -74,6 +74,18 @@
       它的 javadoc 原文就写着「编排层将来理所当然要依赖 domain 与 toolgateway」——
       所以这条依赖是设计预留的，不是破例。
     -->
+    <!--
+      PlanValidator 要用 ToolPolicyEngine 解析每步动作的风险等级。
+      不成环：tool-gateway 只依赖 config 与 domain。
+      F11 只禁 com.oncall.agent.llm.. 与 .prompt.. 两个叶子包依赖内部模块，
+      而它的 javadoc 原文写着「编排层将来理所当然要依赖 domain 与 toolgateway」。
+    -->
+    <dependency>
+      <groupId>com.oncall</groupId>
+      <artifactId>oncall-tool-gateway</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
     <dependency>
       <groupId>com.oncall</groupId>
       <artifactId>oncall-domain</artifactId>
