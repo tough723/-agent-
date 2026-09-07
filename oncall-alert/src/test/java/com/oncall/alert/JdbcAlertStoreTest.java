@@ -218,6 +218,48 @@ class JdbcAlertStoreTest {
     }
 
     @Test
+    @DisplayName("★ labels 为 null 时写 SQL NULL 并原样读回——这条分支此前只在失败路径上被走过")
+    void nullLabelsRoundTripAsSqlNull() {
+        Instant fired = T0.plusSeconds(10);
+        // 不是每条告警都带标签；labels 在 DDL 里可空。
+        AlertEvent noLabels = new AlertEvent("ev-nolabels", "grp-1", "zabbix",
+                "{\"alertname\":\"DiskAlmostFull\"}", null, AlertSeverity.P3,
+                fired, fired.plusSeconds(1));
+        assertThat(store.ingest(descriptor("grp-1", fired), noLabels)).isTrue();
+
+        try (Connection c = dataSource.getConnection();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT labels, labels IS NULL AS is_null"
+                             + " FROM alert_event WHERE id='ev-nolabels'")) {
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getString("labels")).isNull();
+            assertThat(rs.getBoolean("is_null"))
+                    .as("labels 必须是 SQL NULL，而不是字符串 'null' 或 '{}'——"
+                            + "后两者会让 GIN 索引 idx_alert_event_labels 建在一个假值上")
+                    .isTrue();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        assertCountMatchesRealRows("grp-1");
+    }
+
+    @Test
+    @DisplayName("★ 新建组的 firstSeenAt 与本条事件不一致时拒绝——说明调用方拿错了组")
+    void mismatchedFirstSeenIsRejected() {
+        // 组描述声称这个组从 T0 就存在，但本条事件在 T0+60 才发生。
+        AlertGroup wrong = AlertGroup.open("grp-1", "fp-1", "order-service",
+                AlertSeverity.P2, T0);
+        assertThatThrownBy(() -> store.ingest(wrong,
+                event("ev-1", "grp-1", T0.plusSeconds(60))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("AlertGroup.open");
+        // 回滚后既不留事件也不留组
+        assertThat(store.countEventsInGroup("grp-1")).isZero();
+        assertThat(store.findGroup("grp-1")).isEmpty();
+    }
+
+    @Test
     @DisplayName("updateGroupStatus 只改状态；命中 0 行必须抛出来")
     void updateStatusOnlyTouchesStatus() {
         Instant fired = T0.plusSeconds(60);
