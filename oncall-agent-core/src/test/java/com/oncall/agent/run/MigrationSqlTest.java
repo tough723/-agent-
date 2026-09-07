@@ -104,11 +104,15 @@ class MigrationSqlTest {
         assertThat(scripts).hasSize(9);
         for (Path p : scripts) {
             for (String stmt : MigrationSql.statements(Files.readString(p))) {
-                assertThat(count(stmt, '"'))
-                        .as("%s 切出的片段有未闭合的双引号: %s", p.getFileName(), stmt)
+                // ★ 断言「成对」而不是「为零」：合法 SQL 里当然有引号
+                //   （COMMENT ON ... IS '配置覆盖值；…' 就是一对闭合单引号）。
+                //   真正的故障特征是**奇数**个引号——V9 那个被注释里的分号切出来的
+                //   片段，就以一个孤立的 " 开头，PostgreSQL 报 Unterminated identifier。
+                assertThat(count(stmt, '"') % 2)
+                        .as("%s 切出的片段双引号不成对（有未闭合的）: %s", p.getFileName(), stmt)
                         .isZero();
-                assertThat(count(stmt, '\''))
-                        .as("%s 切出的片段有未闭合的单引号: %s", p.getFileName(), stmt)
+                assertThat(count(stmt, '\'') % 2)
+                        .as("%s 切出的片段单引号不成对（有未闭合的）: %s", p.getFileName(), stmt)
                         .isZero();
             }
         }
