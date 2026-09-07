@@ -28,6 +28,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * ② {@code raw_payload} 是 {@code JSONB}，「非法 JSON 会被拒绝」这件事
  *    只有真库能证明——领域层刻意不做这个校验（零依赖，没有解析器）；
  * ③ 事务原子性要在真的会回滚的地方才算验过。
+ *
+ * <h2>★ 本类的核心断言是一条不变量，不是一个数字</h2>
+ * <p>{@code event_count == countEventsInGroup(...)} 在<b>每一步之后</b>都要成立。
+ * 上一版实现第一次跑就红在这条上（计数 2、真实行数 1）：
+ * 当时的 {@code insertGroup} 会建一个计数为 1 却没有对应事件行的组。
+ * <b>是这条断言抓到了实现，不是断言写错了</b>——所以它被刻意保留成
+ * 「计数器 vs 真实行数」的形式，而不是「计数应当等于 2」这种写死的期望值。
  */
 @DisplayName("JdbcAlertStore：分区表落库、事务原子性与计数不漂移")
 class JdbcAlertStoreTest {
@@ -75,8 +82,9 @@ class JdbcAlertStoreTest {
                 + "本测试必须用迁移脚本原文建表，不接受在 Java 里复制一份 DDL");
     }
 
-    private static AlertGroup group(String id) {
-        return AlertGroup.open(id, "fp-" + id, "order-service", AlertSeverity.P2, T0);
+    /** 组描述：首末出现都取本条事件的 firedAt，计数 1。 */
+    private static AlertGroup descriptor(String id, Instant firedAt) {
+        return AlertGroup.open(id, "fp-" + id, "order-service", AlertSeverity.P2, firedAt);
     }
 
     private static AlertEvent event(String id, String groupId, Instant fired) {
@@ -85,100 +93,111 @@ class JdbcAlertStoreTest {
                 "{\"team\":\"trade\"}", AlertSeverity.P2, fired, fired.plusSeconds(2));
     }
 
+    /** ★ 核心不变量：计数器必须等于真实行数。每一步之后都要成立。 */
+    private void assertCountMatchesRealRows(String groupId) {
+        AlertGroup g = store.findGroup(groupId).orElseThrow();
+        assertThat(g.eventCount())
+                .as("event_count 必须等于真实事件行数——聚合率就压在这个相等上")
+                .isEqualTo(store.countEventsInGroup(groupId));
+    }
+
     @Test
-    @DisplayName("★ ingest 一次：事件落库 + 计数 +1 + 最后出现推进，三者同时发生")
-    void ingestBumpsCountAndLastSeenAtomically() {
-        AlertGroup g = group("grp-1");
-        store.insertGroup(g);
+    @DisplayName("★ 第一条事件创建组：计数 1、首末出现同为该事件时刻，且计数 == 真实行数")
+    void firstEventCreatesTheGroup() {
+        Instant fired = T0.plusSeconds(60);
+        assertThat(store.ingest(descriptor("grp-1", fired), event("ev-1", "grp-1", fired)))
+                .isTrue();
 
-        assertThat(store.ingest(g, event("ev-1", "grp-1", T0.plusSeconds(60)))).isTrue();
+        AlertGroup back = store.findGroup("grp-1").orElseThrow();
+        assertThat(back.eventCount()).isEqualTo(1);
+        assertThat(back.firstSeenAt()).isEqualTo(fired);
+        assertThat(back.lastSeenAt()).isEqualTo(fired);
+        assertThat(back.status()).isEqualTo(AlertStatus.OPEN);
+        assertThat(store.countEventsInGroup("grp-1")).isEqualTo(1);
+        assertCountMatchesRealRows("grp-1");
+    }
 
-        AlertGroup back = store.findGroup("grp-1", T0).orElseThrow();
-        // 组本身的 event_count 是 1（open 时那条），ingest 又加一条 → 2
+    @Test
+    @DisplayName("★ 后续事件让计数与最后出现一起推进，且计数始终 == 真实行数")
+    void subsequentEventsBumpCountAndLastSeen() {
+        Instant f1 = T0.plusSeconds(60);
+        Instant f2 = T0.plusSeconds(180);
+        store.ingest(descriptor("grp-1", f1), event("ev-1", "grp-1", f1));
+        // 第二条事件时组已存在，描述里的时刻不会被采用——调用方通常不知道组最初何时出现。
+        assertThat(store.ingest(descriptor("grp-1", f2), event("ev-2", "grp-1", f2))).isTrue();
+
+        AlertGroup back = store.findGroup("grp-1").orElseThrow();
         assertThat(back.eventCount()).isEqualTo(2);
-        assertThat(back.lastSeenAt()).isEqualTo(T0.plusSeconds(60));
-        assertThat(back.firstSeenAt()).as("第一次出现不被后来的事件改掉").isEqualTo(T0);
-        // ★ 计数器与真实行数必须一致——聚合率就压在这个相等上
-        assertThat(store.countEventsInGroup("grp-1")).isEqualTo(back.eventCount());
+        assertThat(back.firstSeenAt()).as("第一次出现是历史事实，不被后来的事件改掉").isEqualTo(f1);
+        assertThat(back.lastSeenAt()).isEqualTo(f2);
+        assertCountMatchesRealRows("grp-1");
     }
 
     @Test
     @DisplayName("★★ 重复投递返回 false 且计数不动——否则聚合率会被算低，与真实情况相反")
     void duplicateDeliveryDoesNotBumpCount() {
-        AlertGroup g = group("grp-1");
-        store.insertGroup(g);
-        assertThat(store.ingest(g, event("ev-1", "grp-1", T0.plusSeconds(60)))).isTrue();
+        Instant fired = T0.plusSeconds(60);
+        store.ingest(descriptor("grp-1", fired), event("ev-1", "grp-1", fired));
 
-        // 同一条告警被上游重投：id 相同。
-        assertThat(store.ingest(g, event("ev-1", "grp-1", T0.plusSeconds(60))))
-                .as("重复投递必须返回 false")
+        assertThat(store.ingest(descriptor("grp-1", fired), event("ev-1", "grp-1", fired)))
+                .as("同一条告警被上游重投，必须返回 false")
                 .isFalse();
 
-        AlertGroup back = store.findGroup("grp-1", T0).orElseThrow();
-        assertThat(back.eventCount()).as("计数不得因重复投递而增加").isEqualTo(2);
-        assertThat(store.countEventsInGroup("grp-1")).isEqualTo(2);
+        assertThat(store.findGroup("grp-1").orElseThrow().eventCount())
+                .as("计数不得因重复投递而增加").isEqualTo(1);
+        assertThat(store.countEventsInGroup("grp-1")).isEqualTo(1);
+        assertCountMatchesRealRows("grp-1");
     }
 
     @Test
-    @DisplayName("★★ 组不存在时必须回滚——没有外键，否则会留下孤儿事件")
-    void missingGroupRollsBackTheEvent() {
-        AlertGroup ghost = group("grp-ghost");
-        // 刻意不 insertGroup：alert_event.group_id 没有外键，数据库不会替我们拦。
-        assertThatThrownBy(() -> store.ingest(ghost, event("ev-1", "grp-ghost", T0)))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("接入告警事件失败");
-
-        // ★ 事务必须真的回滚：不能留下一条挂在不存在组上的事件。
-        assertThat(store.countEventsInGroup("grp-ghost"))
-                .as("回滚后不该留下孤儿事件")
-                .isZero();
-    }
-
-    @Test
-    @DisplayName("★ 非法 JSON 由 PostgreSQL 拒绝——领域层刻意不校验（零依赖，无解析器）")
+    @DisplayName("★ 非法 JSON 由 PostgreSQL 拒绝，且回滚后组也不会被创建")
     void invalidJsonIsRejectedByTheDatabase() {
-        AlertGroup g = group("grp-1");
-        store.insertGroup(g);
-
         AlertEvent bad = new AlertEvent("ev-bad", "grp-1", "prometheus",
                 "{这不是合法的 JSON", null, AlertSeverity.P2, T0, T0.plusSeconds(1));
-        assertThatThrownBy(() -> store.ingest(g, bad))
+        assertThatThrownBy(() -> store.ingest(descriptor("grp-1", T0), bad))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("接入告警事件失败");
 
-        // 回滚后组不该被递增
-        assertThat(store.findGroup("grp-1", T0).orElseThrow().eventCount()).isEqualTo(1);
+        // ★ 事务必须真的回滚：既不留事件，也不留一个空组。
         assertThat(store.countEventsInGroup("grp-1")).isZero();
+        assertThat(store.findGroup("grp-1")).as("回滚后不该留下空组").isEmpty();
     }
 
     @Test
     @DisplayName("事件与组不一致时立刻拒绝——没有外键，这条只能由代码守")
     void mismatchedGroupAndEventIsRejected() {
-        AlertGroup g = group("grp-1");
-        store.insertGroup(g);
-        assertThatThrownBy(() -> store.ingest(g, event("ev-1", "grp-OTHER", T0)))
+        assertThatThrownBy(() -> store.ingest(descriptor("grp-1", T0),
+                event("ev-1", "grp-OTHER", T0)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("没有外键");
+        assertThat(store.countEventsInGroup("grp-1")).isZero();
+        assertThat(store.findGroup("grp-1")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("★ 调用方给的计数不被采用——计数只能由事件的存在性驱动")
+    void callerSuppliedCountIsRejected() {
+        // 造一个 eventCount=3 的「组描述」：上一版会照单全收，于是漂移。
+        AlertGroup lying = new AlertGroup("grp-1", "fp-1", "order-service", AlertSeverity.P2,
+                AlertStatus.OPEN, 3, T0, T0, null);
+        assertThatThrownBy(() -> store.ingest(lying, event("ev-1", "grp-1", T0)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("计数只能由事件的存在性驱动");
         assertThat(store.countEventsInGroup("grp-1")).isZero();
     }
 
     @Test
-    @DisplayName("★ 组 9 列与事件 8 列逐列往返；labels 与 run_id 可空写 SQL NULL")
+    @DisplayName("组 9 列与事件 8 列逐列往返；labels 与 run_id 可空写 SQL NULL")
     void roundTripsAllColumns() {
-        AlertGroup g = group("grp-1");
-        store.insertGroup(g);
-        store.ingest(g, event("ev-1", "grp-1", T0.plusSeconds(5)));
+        Instant fired = T0.plusSeconds(5);
+        store.ingest(descriptor("grp-1", fired), event("ev-1", "grp-1", fired));
 
-        AlertGroup back = store.findGroup("grp-1", T0).orElseThrow();
+        AlertGroup back = store.findGroup("grp-1").orElseThrow();
         assertThat(back.id()).isEqualTo("grp-1");
         assertThat(back.fingerprint()).isEqualTo("fp-grp-1");
         assertThat(back.service()).isEqualTo("order-service");
         assertThat(back.severity()).isEqualTo(AlertSeverity.P2);
-        assertThat(back.status()).isEqualTo(AlertStatus.OPEN);
         assertThat(back.runId()).isNull();
-        assertThat(store.findGroup("grp-1", T0.plusSeconds(1)))
-                .as("主键是 (id, first_seen_at)，时刻不对就查不到")
-                .isEmpty();
 
         try (Connection c = dataSource.getConnection();
              Statement st = c.createStatement();
@@ -191,26 +210,28 @@ class JdbcAlertStoreTest {
             assertThat(rs.getString("labels")).contains("trade");
             assertThat(rs.getString("severity")).isEqualTo("P2");
             assertThat(rs.getTimestamp("received_at").toInstant())
-                    .isEqualTo(T0.plusSeconds(7));
+                    .isEqualTo(fired.plusSeconds(2));
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
+        assertCountMatchesRealRows("grp-1");
     }
 
     @Test
     @DisplayName("updateGroupStatus 只改状态；命中 0 行必须抛出来")
     void updateStatusOnlyTouchesStatus() {
-        AlertGroup g = group("grp-1");
-        store.insertGroup(g);
-        store.ingest(g, event("ev-1", "grp-1", T0.plusSeconds(60)));
+        Instant fired = T0.plusSeconds(60);
+        store.ingest(descriptor("grp-1", fired), event("ev-1", "grp-1", fired));
+        store.ingest(descriptor("grp-1", fired), event("ev-2", "grp-1", fired.plusSeconds(30)));
 
-        store.updateGroupStatus(g.withStatus(AlertStatus.ACKED));
-        AlertGroup back = store.findGroup("grp-1", T0).orElseThrow();
+        store.updateGroupStatus("grp-1", AlertStatus.ACKED);
+        AlertGroup back = store.findGroup("grp-1").orElseThrow();
         assertThat(back.status()).isEqualTo(AlertStatus.ACKED);
         assertThat(back.eventCount()).as("状态流转不得动计数").isEqualTo(2);
-        assertThat(back.lastSeenAt()).isEqualTo(T0.plusSeconds(60));
+        assertThat(back.lastSeenAt()).isEqualTo(fired.plusSeconds(30));
+        assertCountMatchesRealRows("grp-1");
 
-        assertThatThrownBy(() -> store.updateGroupStatus(group("grp-nope")))
+        assertThatThrownBy(() -> store.updateGroupStatus("grp-nope", AlertStatus.RESOLVED))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("命中 0 行");
     }
