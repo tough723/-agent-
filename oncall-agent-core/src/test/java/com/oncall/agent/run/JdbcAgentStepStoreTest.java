@@ -40,19 +40,33 @@ class JdbcAgentStepStoreTest {
 
         PGSimpleDataSource ds = new PGSimpleDataSource();
         ds.setUrl(url);
-        applyMigrationV2(ds);
+        applyMigrations(ds);
         seedParentRun(ds);
         store = new JdbcAgentStepStore(ds);
     }
 
-    private static void applyMigrationV2(DataSource ds) throws Exception {
-        String ddl = readV2();
+    /**
+     * 按迁移顺序应用 V2 与 V9。
+     *
+     * <p><b>为什么这个类也要应用 V9</b>：它与 {@code JdbcAgentRunStoreTest}
+     * 共用同一个 PostgreSQL，而两者都会 {@code DROP} 并重建 {@code agent_run}。
+     * 若只有那个类应用 V9，这张表的 schema 就<b>取决于哪个类最后跑</b>——
+     * 当前不会失败（本类的 INSERT 显式列出列名，而 V9 的新列有 DEFAULT 0），
+     * 但那是运气不是设计。让两个类应用同一组迁移，schema 就与执行顺序无关。
+     */
+    private static void applyMigrations(DataSource ds) throws Exception {
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             st.execute("DROP TABLE IF EXISTS agent_step CASCADE");
             st.execute("DROP TABLE IF EXISTS agent_run CASCADE");
-            for (String stmt : ddl.split(";")) {
-                if (!stmt.isBlank()) {
-                    st.execute(stmt);
+        }
+        for (String file : new String[] {"V2__agent_execution.sql",
+                "V9__agent_run_replan_budget.sql"}) {
+            String ddl = readMigration("db/migration/" + file, "../db/migration/" + file);
+            try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+                for (String stmt : ddl.split(";")) {
+                    if (!stmt.isBlank()) {
+                        st.execute(stmt);
+                    }
                 }
             }
         }
@@ -69,15 +83,15 @@ class JdbcAgentStepStoreTest {
         }
     }
 
-    private static String readV2() throws Exception {
-        for (String p : new String[] {"db/migration/V2__agent_execution.sql",
-                "../db/migration/V2__agent_execution.sql"}) {
+    /** 从候选路径里找到并读取迁移脚本原文（不在 Java 里复制 DDL）。 */
+    private static String readMigration(String... candidates) throws Exception {
+        for (String p : candidates) {
             if (java.nio.file.Files.exists(java.nio.file.Path.of(p))) {
                 return java.nio.file.Files.readString(java.nio.file.Path.of(p));
             }
         }
-        throw new IllegalStateException("找不到 V2__agent_execution.sql——"
-                + "本测试必须用迁移脚本原文建表，不接受在 Java 里复制一份 DDL");
+        throw new IllegalStateException("找不到迁移脚本 " + String.join(" / ", candidates)
+                + "——本测试必须用迁移脚本原文建表，不接受在 Java 里复制一份 DDL");
     }
 
     private static AgentStep step(String id, int seq, String idemKey) {
