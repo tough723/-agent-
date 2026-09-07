@@ -139,10 +139,24 @@ public final class Executor {
 
             // ⑥ 落库抢占。返回 false 说明这一步已被别的 worker 抢走
             //    （或上一次崩溃前已经做过），不重复执行。
+            //
+            // ★ 主键与幂等键都必须带「第几代计划」。重规划后新计划的 seq
+            //   会从 1 重新开始，不带代号的话：
+            //     - stepId 撞 agent_step 主键 → tryInsert 返回 false → 下面的
+            //       continue 把这一步静默跳过，新计划的前几步就这么消失了；
+            //     - 幂等键撞 uq_agent_step_idem → 同样被跳过。
+            //   两条唯一约束都得换代，只改一条等于没修。
+            //
+            //   注：这与 GuardedToolCallback 自己的幂等键无关。那个撞键时是
+            //   「重放上次的结果」（ledger.claim 失败 → return prior），是安全的；
+            //   而这里撞键是 continue，会丢数据。两者也落在不同的存储
+            //   （agent_step.idempotency_key vs ToolExecutionLedger），无需同形。
+            int generation = current.usedReplans();
             String idemKey = idempotencyKeys.keyFor(
-                    current.id(), step.seq(), step.action(), step.argsJson());
+                    planScope(current.id(), generation), step.seq(),
+                    step.action(), step.argsJson());
             AgentStep running = AgentStep.start(
-                    stepId(current.id(), step.seq()), current.id(), step.seq(),
+                    stepId(current.id(), generation, step.seq()), current.id(), step.seq(),
                     step.action(), step.argsJson(), idemKey, clock.instant());
             if (!stepStore.tryInsert(running)) {
                 continue;
@@ -176,8 +190,39 @@ public final class Executor {
      * <p>用 {@code runId:seq} 而不是随机 ID：同一次运行的同一序号必须是同一个主键，
      * 这样崩溃重启后重跑会撞主键而不是插出一条重复步骤。
      */
-    private static String stepId(String runId, int seq) {
-        return runId + ":" + seq;
+    /**
+     * 步骤主键：{@code runId:第几代计划:seq}。
+     *
+     * <p>★ 中间那一段是重规划代号（{@code AgentRun.usedReplans()}）。
+     * 少了它，重规划后新计划的 {@code seq} 会从 1 重新开始，
+     * 与上一代计划撞主键，{@code tryInsert} 返回 false，
+     * 那一步被静默 {@code continue} 掉——<b>新计划的前几步会凭空消失</b>，
+     * 而日志里看不出任何异常。
+     *
+     * <p>列宽：{@code agent_step.id} 是 {@code VARCHAR(64)}，而 {@code runId}
+     * 本身就允许到 64。也就是说这个格式在极端情况下会超宽——
+     * 但那是<b>先前就存在</b>的问题（原格式 {@code runId:seq} 同样会超），
+     * 且 {@code AgentStep} 构造期的 {@code requireFits} 会抛而不是截断，
+     * 所以它是显式失败而非静默错行。不在本增量里扩范围。
+     */
+    private static String stepId(String runId, int generation, int seq) {
+        return runId + ":" + generation + ":" + seq;
+    }
+
+    /**
+     * 幂等作用域：{@code runId#第几代计划}。
+     *
+     * <p>作为 {@code IdempotencyStore.keyFor} 的第一个参数传入。
+     * 那个参数的名字叫 {@code runId}，但它的实际职责是「幂等键的作用域」——
+     * 而重规划后的同一步是一次<b>新的尝试</b>，不该与上一代计划共享作用域，
+     * 否则 {@code uq_agent_step_idem} 会把它判成重复执行而跳过。
+     *
+     * <p>刻意不改 {@code IdempotencyStore.keyFor} 的签名：那个接口也被
+     * {@code GuardedToolCallback} 用着，而它撞键时的行为是「重放上次的结果」
+     * （安全），与这里的 {@code continue}（丢数据）语义不同，两者无需同形。
+     */
+    private static String planScope(String runId, int generation) {
+        return runId + "#" + generation;
     }
 
     /**

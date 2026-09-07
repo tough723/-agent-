@@ -214,7 +214,9 @@ class JdbcAgentRunStoreTest {
         assertThat(back.usedReplans()).isZero();
 
         // 重规划两次后落库：used_replans 是进度，必须被 update 写进去
-        AgentRun advanced = run.consumeReplan().consumeReplan();
+        // 每次重规划之间必须有一次「停下」：resumeForReplan() 只接受终态。
+        AgentRun advanced = run.finish(RunStatus.FAILED, T0).resumeForReplan()
+                .finish(RunStatus.ABORTED, T0).resumeForReplan();
         store.update(advanced);
 
         AgentRun reloaded = store.findById("run-rp").orElseThrow();

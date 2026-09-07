@@ -186,31 +186,62 @@ public record AgentRun(
     }
 
     /**
-     * 消耗一次重规划配额，返回新实例。
+     * 从终态回到 {@code RUNNING}，并消耗一次重规划配额。
+     *
+     * <h2>★ 为什么要求「必须是终态」——这与直觉相反</h2>
+     * <p>重规划换掉的是<b>剩下要走的步骤</b>。一次还在跑的执行没有「剩下」，
+     * 所以<b>只有停下来的排查才有可重规划的东西</b>。
+     *
+     * <p>这不是理论推演：{@code Executor.execute()} 的两条返回路径都会调
+     * {@link #finish}，所以 {@code ExecutionResult.run()} <b>必定是终态</b>。
+     * 本方法早先的守卫方向是反的（终态即拒），后果是
+     * {@code Replanner} 永远拿不到一个能用的 run ——
+     * <b>重规划在结构上进不了循环</b>，而每个单元测试都还是绿的，
+     * 因为测试喂进去的是手工构造的 RUNNING run，不是 {@code Executor} 的真实输出。
+     *
+     * <h2>★ 为什么 SUCCEEDED 与 HANDED_OVER 不可恢复</h2>
+     * <ul>
+     *   <li>{@code SUCCEEDED}：没有可重规划的东西，重规划只会白扣一次预算；</li>
+     *   <li>{@code HANDED_OVER}：人已经接手了，机器再改主意是越权。</li>
+     * </ul>
+     * 只有 {@code FAILED} 与 {@code ABORTED} 是「机器自己停下来、还可以再试」的状态。
+     *
+     * <h2>★ 为什么 finishedAt 必须清空</h2>
+     * <p>构造期不变量规定 {@code finished_at} 与终态<b>互为充要</b>。
+     * 回到 RUNNING 却留着 finishedAt，会直接违反那条不变量；
+     * 而留着它更实际的坏处是：一个还在跑的排查会声称自己已经结束。
      *
      * <p><b>为什么是独立方法而不是并入 {@link #consume}</b>：
-     * 重规划不消耗步数——它换掉的是<b>剩下要走的步骤</b>，不是走了一步。
-     * 若并入 {@code consume}，调用方就得传 {@code consume(0, tokens, cost)}
-     * 来表达「只重规划、不走步」，那个 0 会被读成「走了 0 步」，
-     * 而游标推进与步数消耗在本类里是刻意绑在一起的。
+     * 重规划不消耗步数。若并入 {@code consume}，调用方就得传
+     * {@code consume(0, tokens, cost)} 来表达「只重规划、不走步」，
+     * 那个 0 会被读成「走了 0 步」。
      *
-     * @throws IllegalStateException 若本次重规划会越过预算，或已收尾
+     * @throws IllegalStateException 若尚未结束、已成功、已交回人工，或预算已耗尽
      */
-    public AgentRun consumeReplan() {
-        if (status.isTerminal()) {
+    public AgentRun resumeForReplan() {
+        if (!status.isTerminal()) {
+            throw new IllegalStateException("status=" + status
+                    + " 尚未结束，无从重规划——重规划换掉的是「剩下要走的步骤」，"
+                    + "一次还在跑的执行没有「剩下」");
+        }
+        if (status == RunStatus.SUCCEEDED) {
             throw new IllegalStateException(
-                    "status=" + status + " 已是终态，不再重规划");
+                    "status=SUCCEEDED 已成功，没有可重规划的东西——重规划只会白扣一次预算");
+        }
+        if (status == RunStatus.HANDED_OVER) {
+            throw new IllegalStateException(
+                    "status=HANDED_OVER 已交回人工，人已经接手了，机器再改主意是越权");
         }
         if (usedReplans + 1 > budgetReplans) {
-            // 抛异常而不是静默截断：重规划预算耗尽是一个<b>终止条件</b>，
+            // 抛异常而不是静默截断：重规划预算耗尽是一个终止条件，
             // 调用方必须知道并据此收尾，而不是以为这次重规划生效了。
             throw new IllegalStateException("重规划预算已耗尽："
                     + usedReplans + "/" + budgetReplans
                     + "——这是终止条件，应当收尾而不是继续改主意");
         }
-        return new AgentRun(id, traceId, alertGroupId, status, autonomyLevel,
+        return new AgentRun(id, traceId, alertGroupId, RunStatus.RUNNING, autonomyLevel,
                 stepCursor, budgetSteps, budgetTokens, budgetCost, budgetReplans,
-                usedSteps, usedTokens, usedCost, usedReplans + 1, createdAt, finishedAt);
+                usedSteps, usedTokens, usedCost, usedReplans + 1, createdAt, null);
     }
 
     /** 重规划配额是否已经用尽。用尽即该收尾，而不是再改一次主意。 */

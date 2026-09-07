@@ -83,8 +83,7 @@ class ReplannerTest {
         StubChatModel model = StubChatModel.returning(OK_JSON);
         AgentRun run = running(2);
 
-        ReplanOutcome outcome = replanner(model).replan(run, "payment-api P99 延迟升高",
-                failed(run), tools());
+        ReplanOutcome outcome = replanner(model).replan(failed(run), "payment-api P99 延迟升高", tools());
 
         assertThat(outcome.plan().size()).isEqualTo(3);
         assertThat(outcome.plan().step(1).action()).isEqualTo("k8s_get_events");
@@ -101,7 +100,7 @@ class ReplannerTest {
     /**
      * ★ 本类最重要的一条。
      *
-     * <p>{@code consumeReplan()} 返回的是一个<b>新的</b>不可变 run。
+     * <p>{@code resumeForReplan()} 返回的是一个<b>新的</b>不可变 run。
      * 如果 {@code Replanner} 只返回 {@link Plan}，调用方一旦忘记自己扣预算，
      * {@code used_replans} 就永远停在 0 —— 那个预算等于不存在，
      * 循环可以无限改主意而每一步看起来都合法。
@@ -113,7 +112,7 @@ class ReplannerTest {
         assertThat(run.usedReplans()).isEqualTo(0);
 
         ReplanOutcome outcome = replanner(StubChatModel.returning(OK_JSON))
-                .replan(run, "告警", failed(run), tools());
+                .replan(failed(run), "告警", tools());
 
         assertThat(outcome.run().usedReplans())
                 .as("返回的 run 必须是扣过预算的那个，不是传进去的旧 run")
@@ -130,11 +129,11 @@ class ReplannerTest {
         Replanner r = replanner(StubChatModel.returning(OK_JSON, OK_JSON));
         AgentRun run = running(2);
 
-        ReplanOutcome first = r.replan(run, "告警", failed(run), tools());
+        ReplanOutcome first = r.replan(failed(run), "告警", tools());
         assertThat(first.run().usedReplans()).isEqualTo(1);
         assertThat(first.run().replanBudgetExhausted()).isFalse();
 
-        ReplanOutcome second = r.replan(first.run(), "告警", failed(first.run()), tools());
+        ReplanOutcome second = r.replan(failed(first.run()), "告警", tools());
         assertThat(second.run().usedReplans()).isEqualTo(2);
         assertThat(second.run().replanBudgetExhausted())
                 .as("2/2 之后必须判定为耗尽，否则第三次还能继续")
@@ -150,7 +149,7 @@ class ReplannerTest {
         ExecutionResult done = new ExecutionResult(run.finish(RunStatus.SUCCEEDED, T0), 3, null);
 
         assertThatThrownBy(() -> replanner(StubChatModel.returning(OK_JSON))
-                .replan(run, "告警", done, tools()))
+                .replan(done, "告警", tools()))
                 .isInstanceOf(ReplanNotApplicableException.class)
                 .hasMessageContaining("SUCCEEDED");
     }
@@ -163,7 +162,7 @@ class ReplannerTest {
                 run.finish(RunStatus.HANDED_OVER, T0), 1, "高危动作需人工确认");
 
         assertThatThrownBy(() -> replanner(StubChatModel.returning(OK_JSON))
-                .replan(run, "告警", handed, tools()))
+                .replan(handed, "告警", tools()))
                 .isInstanceOf(ReplanNotApplicableException.class)
                 .hasMessageContaining("HANDED_OVER");
     }
@@ -181,7 +180,7 @@ class ReplannerTest {
         assertThat(run.replanBudgetExhausted()).as("0/0 应判定为已耗尽").isTrue();
 
         assertThatThrownBy(() -> replanner(StubChatModel.returning(OK_JSON))
-                .replan(run, "告警", failed(run), tools()))
+                .replan(failed(run), "告警", tools()))
                 .isInstanceOf(ReplanNotApplicableException.class)
                 .hasMessageContaining("预算已耗尽");
     }
@@ -193,7 +192,7 @@ class ReplannerTest {
         // ★ 两种异常分开：预算耗尽是「容量」问题，模型挂了是「依赖」问题。
         //   合并成一个计数会把容量规划问题误读成稳定性事故。
         assertThatThrownBy(() -> replanner(StubChatModel.returning(OK_JSON))
-                .replan(run, "告警", failed(run), tools()))
+                .replan(failed(run), "告警", tools()))
                 .isInstanceOf(ReplanNotApplicableException.class)
                 .isNotInstanceOf(PlanProductionException.class);
     }
@@ -219,7 +218,7 @@ class ReplannerTest {
         AgentRun run = running(2);
 
         assertThatThrownBy(() -> replanner(StubChatModel.returning(noBasis))
-                .replan(run, "告警", failed(run), tools()))
+                .replan(failed(run), "告警", tools()))
                 .isInstanceOf(PlanProductionException.class)
                 .hasMessageContaining("basis");
     }
@@ -240,7 +239,7 @@ class ReplannerTest {
         AgentRun run = running(2);
 
         assertThatThrownBy(() -> replanner(StubChatModel.returning(allWrites))
-                .replan(run, "告警", failed(run), tools()))
+                .replan(failed(run), "告警", tools()))
                 .isInstanceOf(PlanRejectedException.class);
     }
 
@@ -252,13 +251,13 @@ class ReplannerTest {
         Replanner r = replanner(StubChatModel.returning(OK_JSON));
         AgentRun run = running(2);
 
-        assertThatThrownBy(() -> r.replan(run, "  ", failed(run), tools()))
+        assertThatThrownBy(() -> r.replan(failed(run), "  ", tools()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("alert");
-        assertThatThrownBy(() -> r.replan(run, "告警", failed(run), List.of()))
+        assertThatThrownBy(() -> r.replan(failed(run), "告警", List.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("availableTools");
-        assertThatThrownBy(() -> r.replan(run, "告警", null, tools()))
+        assertThatThrownBy(() -> r.replan(null, "告警", tools()))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -269,7 +268,7 @@ class ReplannerTest {
         // ★ 刻意不兜底：「模型没给出计划就沿用上一个计划再跑一遍」不是兜底，
         //   是死循环——上一个计划刚刚失败过。
         assertThatThrownBy(() -> replanner(StubChatModel.returning(""))
-                .replan(run, "告警", failed(run), tools()))
+                .replan(failed(run), "告警", tools()))
                 .isInstanceOf(PlanProductionException.class);
     }
 
@@ -280,7 +279,7 @@ class ReplannerTest {
     void outcomeRejectsARunThatWasNotDecremented() {
         AgentRun fresh = running(2);   // usedReplans == 0
         Plan plan = replanner(StubChatModel.returning(OK_JSON))
-                .replan(fresh, "告警", failed(fresh), tools()).plan();
+                .replan(failed(fresh), "告警", tools()).plan();
 
         // 把「新计划 + 扣之前的旧 run」拼在一起 —— 这正是调用方忘记扣预算时会发生的事。
         assertThatThrownBy(() -> new ReplanOutcome(fresh, plan))

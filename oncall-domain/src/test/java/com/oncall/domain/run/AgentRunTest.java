@@ -194,39 +194,80 @@ class AgentRunTest {
         assertThat(noReplan.replanBudgetExhausted())
                 .as("预算 0 意味着一次都不许重规划")
                 .isTrue();
-        assertThatThrownBy(noReplan::consumeReplan)
+        // ★ 必须先收尾再重规划：还在跑的排查没有「剩下的步骤」可换。
+        assertThatThrownBy(() -> noReplan.finish(RunStatus.FAILED, T0).resumeForReplan())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("终止条件");
     }
 
     @Test
-    @DisplayName("consumeReplan 递增已用次数，且不动步数与游标")
-    void consumeReplanAdvancesOnlyTheReplanCounter() {
-        AgentRun r = running().consumeReplan();
+    @DisplayName("resumeForReplan 递增已用次数，把终态改回 RUNNING，且不动步数与游标")
+    void resumeForReplanAdvancesOnlyTheReplanCounter() {
+        AgentRun r = running().finish(RunStatus.FAILED, T0).resumeForReplan();
+
         assertThat(r.usedReplans()).isEqualTo(1);
         assertThat(r.usedSteps()).as("重规划不消耗步数——它换掉的是剩下要走的步骤").isZero();
         assertThat(r.stepCursor()).as("游标不该因为改主意而推进").isZero();
         assertThat(r.replanBudgetExhausted()).isFalse();
+
+        // ★ 这两条是本次修正的核心：重规划必须真的把 run 拉回可执行状态。
+        assertThat(r.status()).as("重规划后必须重新可执行").isEqualTo(RunStatus.RUNNING);
+        assertThat(r.finishedAt())
+                .as("finished_at 与终态互为充要——回到 RUNNING 就必须清空，"
+                        + "否则一个还在跑的排查会声称自己已经结束")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("FAILED 与 ABORTED 都可以重规划（这两种才是「机器自己停下、还能再试」）")
+    void bothFailedAndAbortedCanBeResumed() {
+        assertThat(running().finish(RunStatus.FAILED, T0).resumeForReplan().status())
+                .isEqualTo(RunStatus.RUNNING);
+        assertThat(running().finish(RunStatus.ABORTED, T0).resumeForReplan().status())
+                .as("急停也是一次可重试的停止")
+                .isEqualTo(RunStatus.RUNNING);
     }
 
     @Test
     @DisplayName("★ 越过重规划预算即抛，而不是静默截断")
-    void consumeReplanRefusesToExceedBudget() {
-        AgentRun r = running().consumeReplan().consumeReplan();   // 夹具预算为 2
+    void resumeForReplanRefusesToExceedBudget() {
+        // 夹具预算为 2：每次重规划之间必须先有一次「停下」，
+        // 因为重规划换掉的是剩下要走的步骤，还在跑的执行没有「剩下」。
+        AgentRun r = running().finish(RunStatus.FAILED, T0).resumeForReplan()
+                .finish(RunStatus.ABORTED, T0).resumeForReplan();
         assertThat(r.usedReplans()).isEqualTo(2);
         assertThat(r.replanBudgetExhausted()).isTrue();
-        assertThatThrownBy(r::consumeReplan)
+        assertThatThrownBy(() -> r.finish(RunStatus.FAILED, T0).resumeForReplan())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("重规划预算已耗尽");
     }
 
+    /**
+     * ★ 这条测试原先断言的是「已收尾的 run 不再重规划」——
+     * 而那个规则<b>方向是反的</b>：{@code Executor.execute()} 的两条返回路径
+     * 都会 {@code finish(...)}，所以执行结果必定是终态；
+     * 若终态一律拒绝，重规划就永远进不了循环。
+     *
+     * <p>真正的规则是「只有<b>失败</b>地停下来才能重规划」，
+     * 所以下面三种才是该拒的。
+     */
     @Test
-    @DisplayName("已收尾的 run 不再重规划")
-    void consumeReplanRefusesAfterFinish() {
-        AgentRun done = running().finish(RunStatus.SUCCEEDED, T0);
-        assertThatThrownBy(done::consumeReplan)
+    @DisplayName("★ resumeForReplan 的三种拒绝：还在跑 / 已成功 / 已交回人工")
+    void resumeForReplanRefusesTheThreeWrongStates() {
+        // ① 还在跑：没有「剩下的步骤」可换。
+        assertThatThrownBy(() -> running().resumeForReplan())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("终态");
+                .hasMessageContaining("尚未结束");
+
+        // ② 已成功：没有可重规划的东西，重规划只会白扣一次预算。
+        assertThatThrownBy(() -> running().finish(RunStatus.SUCCEEDED, T0).resumeForReplan())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("SUCCEEDED");
+
+        // ③ 已交回人工：人已经接手了，机器再改主意是越权。
+        assertThatThrownBy(() -> running().finish(RunStatus.HANDED_OVER, T0).resumeForReplan())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("HANDED_OVER");
     }
 
     @Test

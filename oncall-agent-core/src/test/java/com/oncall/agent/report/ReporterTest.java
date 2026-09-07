@@ -199,9 +199,8 @@ class ReporterTest {
     @Test
     @DisplayName("摘要带上重规划次数与已执行步数，便于人复核")
     void summaryCarriesTheFactsNeededForReview() {
-        // ★ 顺序不能反：consumeReplan() 对终态抛 IllegalStateException，
-        //   所以必须「先扣重规划配额，再收尾」。
-        AgentRun run = run(RunStatus.RUNNING).consumeReplan().finish(RunStatus.SUCCEEDED, T0);
+        // ★ 顺序就是真实循环里的顺序：执行失败 → 重规划（终态回到 RUNNING）→ 再执行成功。
+        AgentRun run = run(RunStatus.FAILED).resumeForReplan().finish(RunStatus.SUCCEEDED, T0);
         Report report = reporter().report(run, planWithAWrite(), result(run, 3, null));
 
         assertThat(report.summary())

@@ -20,9 +20,9 @@ import java.util.Objects;
  * 重规划器 —— 一次执行没跑完时，决定「换个计划再试」还是「交回人工」。
  *
  * <h2>★ 为什么它必须自己扣预算，而不是只返回一个新计划</h2>
- * <p>{@link AgentRun#consumeReplan()} 返回的是一个<b>新的</b> {@code AgentRun}
+ * <p>{@link AgentRun#resumeForReplan()} 返回的是一个<b>新的</b> {@code AgentRun}
  * （record 不可变）。如果本类只返回 {@link Plan}，调用方就必须记得
- * 自己去 {@code run.consumeReplan()} —— 而一旦忘了，
+ * 自己去 {@code run.resumeForReplan()} —— 而一旦忘了，
  * <b>重规划预算永远不会减少</b>，那个预算就等于不存在，
  * 循环可以无限改主意而每一步看起来都合法。
  *
@@ -80,21 +80,35 @@ public final class Replanner {
     /**
      * 产出新计划，<b>并返回扣过重规划预算的 run</b>。
      *
-     * @param run            当前 run。必须还活着（{@code RUNNING}）且预算未耗尽
+     * @param last           上一次执行的结果。它同时提供两样东西：
+     *                       <ul>
+     *                         <li>{@code stoppedReason} —— 重规划的核心输入，
+     *                             不知道为什么失败的重规划只是在瞎猜；</li>
+     *                         <li>{@code run()} —— 当前 run。<b>它必定是终态</b>
+     *                             （{@code Executor.execute()} 的两条返回路径都会
+     *                             {@code finish(...)}），而重规划正是把它拉回
+     *                             {@code RUNNING} 的那一步。</li>
+     *                       </ul>
+     *                       ★ 这里刻意<b>不</b>再单独收一个 {@code run} 参数：
+     *                       早先同时收 {@code run} 和 {@code last}，调用方就能传进
+     *                       一对不自洽的参数（一个 RUNNING 的 run 配一个终态的 last），
+     *                       编译器不拦，而重规划于是永远进不了真实循环。
      * @param alert          原始告警文本。重规划看的是原始事实，
      *                       <b>不是上一轮的输出</b> —— 上一轮输出可能已被污染。
-     * @param last           上一次执行的结果。它的 {@code stoppedReason} 是重规划的核心输入：
-     *                       不知道为什么失败的重规划只是在瞎猜。
      * @param availableTools 仍然可用的工具
-     * @return 新计划 + 扣过预算的 run，两者配套
+     * @return 新计划 + 已拉回 {@code RUNNING} 且扣过预算的 run，两者配套
      * @throws ReplanNotApplicableException 上一次已成功/已交回人工/预算耗尽
      * @throws PlanProductionException      模型或输出不可用
      * @throws PlanRejectedException        新计划未通过静态校验
      */
-    public ReplanOutcome replan(AgentRun run, String alert, ExecutionResult last,
+    public ReplanOutcome replan(ExecutionResult last, String alert,
                                 List<String> availableTools) {
-        Objects.requireNonNull(run, "run");
         Objects.requireNonNull(last, "last");
+        // ★ run 从 last 里取，不再单独收一个参数。
+        //   早先这里同时收 run 和 last，而 last.run() 本身就是那个 run ——
+        //   调用方于是可以传进一对不自洽的参数（一个 RUNNING 的 run 配一个
+        //   终态的 last），编译器不会拦，而重规划就永远进不了真实的循环。
+        AgentRun run = last.run();
         Objects.requireNonNull(availableTools, "availableTools");
         if (alert == null || alert.isBlank()) {
             throw new IllegalArgumentException("alert 不能为空");
@@ -155,8 +169,9 @@ public final class Replanner {
         // 与 Planner 用同一个校验器：重规划不该享有更宽松的标准。
         validator.validate(plan);
 
-        // ★ 扣预算与返回新计划绑在一起。consumeReplan() 返回新的不可变 run，
-        //   所以这里必须把返回值带出去，否则调用方拿到的是扣之前的旧 run。
-        return new ReplanOutcome(run.consumeReplan(), plan);
+        // ★ 扣预算与返回新计划绑在一起。resumeForReplan() 返回新的不可变 run
+        //   （终态 → RUNNING，并清空 finishedAt），所以这里必须把返回值带出去，
+        //   否则调用方拿到的是那个已经收尾的旧 run。
+        return new ReplanOutcome(run.resumeForReplan(), plan);
     }
 }

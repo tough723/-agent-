@@ -9,7 +9,7 @@ import java.util.Objects;
  * 一次重规划的结果 —— <b>新计划与扣过预算的 run 绑定在一起</b>。
  *
  * <h2>★ 为什么必须绑在一起返回</h2>
- * <p>{@link AgentRun#consumeReplan()} 返回的是一个<b>新的</b>不可变 run。
+ * <p>{@link AgentRun#resumeForReplan()} 返回的是一个<b>新的</b>不可变 run。
  * 如果 {@link Replanner} 只返回 {@link Plan}，调用方就得记得自己去扣预算 ——
  * 而一旦忘了，<b>重规划预算永远不会减少</b>：
  * {@code used_replans} 停在 0，{@code budget_replans} 形同虚设，
